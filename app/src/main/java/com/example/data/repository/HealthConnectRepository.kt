@@ -3,17 +3,16 @@ package com.example.data.repository
 import android.content.Context
 import android.util.Log
 import androidx.health.connect.client.HealthConnectClient
-import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.ElevationGainedRecord
 import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.HeartRateRecord
-import androidx.health.connect.client.records.SpeedRecord
 import androidx.health.connect.client.records.TotalCaloriesBurnedRecord
 import androidx.health.connect.client.request.AggregateRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import com.example.data.health.HealthConnectStatus
+import com.example.data.health.HealthPermissions
 import com.example.data.health.SeedDataGenerator
 import com.example.data.local.CachedSessionEntity
 import com.example.data.local.PaceLabDao
@@ -21,39 +20,37 @@ import com.example.data.local.PaceLabDatabase
 import com.example.data.model.HeartRatePoint
 import com.example.data.model.RunSession
 import com.example.data.model.RunSplit
+import com.example.util.DistanceInterval
+import com.example.util.HrHistogram
 import com.example.util.PaceUtils
+import com.example.util.SplitCalculator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.Duration
 import java.time.Instant
+import kotlin.coroutines.cancellation.CancellationException
+import kotlin.math.roundToInt
 
-/**
- * Result of aggregating running metrics over an arbitrary historical time window.
- */
-data class HistoricalAggregateResult(
-    val startTime: Instant,
-    val endTime: Instant,
-    val totalDistanceMeters: Double,
-    val totalCaloriesKcal: Double?,
-    val totalElevationMeters: Double?,
-    val avgHeartRateBpm: Int?,
-    val maxHeartRateBpm: Int?
+/** Thrown when the minimum read permissions (exercise + distance) are not granted. */
+class HealthPermissionMissingException : Exception("Izin baca data lari belum diberikan")
+
+data class SyncSummary(val fetched: Int, val added: Int)
+
+data class SessionDetails(
+    val splits: List<RunSplit>,
+    val hrPoints: List<HeartRatePoint>
 )
 
 /**
- * Repository interface for interacting with Health Connect.
- * Queries running sessions, aggregates workload metrics, and extracts splits and HR time series.
- * Specifically configured to bypass the 30-day limit using READ_HEALTH_DATA_HISTORY and unbounded TimeRangeFilters.
+ * Reads running sessions from Health Connect into the local Room cache.
+ * Splits and heart rate come only from real records; nothing is simulated for real runs.
  */
 interface HealthConnectRepository {
     val requiredPermissions: Set<String>
     suspend fun getAvailabilityStatus(): HealthConnectStatus
-    suspend fun hasAllPermissions(): Boolean
-    suspend fun syncAllRunningData(forceDemoFallback: Boolean = false): Result<Int>
-    suspend fun readAllHistoricalSessions(): List<RunSession>
-    suspend fun readSessionsInRange(startTime: Instant, endTime: Instant): List<RunSession>
-    suspend fun aggregateHistoricalWindow(startTime: Instant, endTime: Instant): HistoricalAggregateResult
-    suspend fun getSessionSplitsAndHr(session: RunSession): Pair<List<RunSplit>, List<HeartRatePoint>>
+    suspend fun getGrantedPermissions(): Set<String>
+    suspend fun syncAllRunningData(): Result<SyncSummary>
+    suspend fun getSessionSplitsAndHr(session: RunSession): SessionDetails
 }
 
 class HealthConnectRepositoryImpl(
@@ -63,16 +60,7 @@ class HealthConnectRepositoryImpl(
 
     private val tag = "HealthConnectRepo"
 
-    override val requiredPermissions: Set<String> = setOf(
-        HealthPermission.getReadPermission(ExerciseSessionRecord::class),
-        HealthPermission.getReadPermission(DistanceRecord::class),
-        HealthPermission.getReadPermission(HeartRateRecord::class),
-        HealthPermission.getReadPermission(SpeedRecord::class),
-        HealthPermission.getReadPermission(TotalCaloriesBurnedRecord::class),
-        HealthPermission.getReadPermission(ElevationGainedRecord::class),
-        // Permission required to read historical data older than 30 days
-        "android.permission.health.READ_HEALTH_DATA_HISTORY"
-    )
+    override val requiredPermissions: Set<String> = HealthPermissions.all
 
     private fun getClient(): HealthConnectClient? {
         return try {
@@ -98,89 +86,72 @@ class HealthConnectRepositoryImpl(
         }
     }
 
-    override suspend fun hasAllPermissions(): Boolean = withContext(Dispatchers.IO) {
-        val client = getClient() ?: return@withContext false
+    override suspend fun getGrantedPermissions(): Set<String> = withContext(Dispatchers.IO) {
+        val client = getClient() ?: return@withContext emptySet()
         try {
-            val granted = client.permissionController.getGrantedPermissions()
-            granted.contains(HealthPermission.getReadPermission(ExerciseSessionRecord::class)) &&
-                    granted.contains(HealthPermission.getReadPermission(DistanceRecord::class))
+            client.permissionController.getGrantedPermissions()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(tag, "Failed checking granted permissions", e)
-            false
+            emptySet()
         }
     }
 
-    /**
-     * Synchronizes all running data from Health Connect into local Room database.
-     * Tries unbounded historical sessions first, with resilient 30-day fallback if history permission is unavailable.
-     */
-    override suspend fun syncAllRunningData(forceDemoFallback: Boolean): Result<Int> = withContext(Dispatchers.IO) {
+    override suspend fun syncAllRunningData(): Result<SyncSummary> = withContext(Dispatchers.IO) {
         try {
-            var sessions = emptyList<RunSession>()
             val client = getClient()
+                ?: return@withContext Result.failure(IllegalStateException("Health Connect tidak tersedia di device ini"))
 
-            if (client != null && !forceDemoFallback) {
-                sessions = readAllHistoricalSessions()
+            val granted = client.permissionController.getGrantedPermissions()
+            if (!granted.containsAll(HealthPermissions.core)) {
+                return@withContext Result.failure(HealthPermissionMissingException())
+            }
+            // Without the history permission Health Connect only exposes a limited window, so a
+            // run missing from the result does not prove it was deleted at the source.
+            val isComplete = HealthPermissions.HISTORY in granted
+
+            val records = fetchRunningRecords(client, TimeRangeFilter.before(Instant.now()))
+            val ignored = dao.getIgnoredIds().toSet()
+            val knownRealIds = dao.getRealSessionIds().toSet()
+            val syncedIds = dao.getSyncedSessionIds().toSet()
+            val recentCutoff = Instant.now().minus(Duration.ofDays(3))
+
+            val candidates = records.filter { it.metadata.id !in ignored }
+            // Only new runs and runs that just finished (HR/distance may still be arriving).
+            val toProcess = candidates.filter {
+                it.metadata.id !in syncedIds || it.endTime.isAfter(recentCutoff)
             }
 
+            val sessions = ArrayList<RunSession>(toProcess.size)
+            for (record in toProcess) {
+                val session = buildSession(client, record, granted)
+                if (session != null) sessions.add(session)
+            }
             if (sessions.isNotEmpty()) {
-                val entities = sessions.map { it.toEntity() }
-                dao.insertSessions(entities)
-                Result.success(sessions.size)
-            } else {
-                val existing = dao.getAllSessionsList()
-                if (existing.isEmpty() && forceDemoFallback) {
-                    val demo = SeedDataGenerator.generateDemoSessions()
-                    dao.insertSessions(demo.map { it.toEntity() })
-                    Result.success(demo.size)
-                } else {
-                    Result.success(existing.size)
-                }
+                dao.insertSessions(sessions.map { it.toEntity() })
             }
+
+            if (isComplete) {
+                val fetchedIds = candidates.map { it.metadata.id }.toSet()
+                val stale = knownRealIds.filter { it !in fetchedIds }
+                stale.chunked(500).forEach { dao.deleteSessions(it) }
+            }
+
+            if (dao.countRealSessions() > 0) {
+                dao.deleteSeedSessions()
+            }
+
+            val added = sessions.count { it.id !in knownRealIds }
+            Result.success(SyncSummary(fetched = candidates.size, added = added))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: SecurityException) {
+            Log.w(tag, "Health Connect permission error", e)
+            Result.failure(HealthPermissionMissingException())
         } catch (e: Exception) {
             Log.e(tag, "Failed syncing Health Connect data", e)
             Result.failure(e)
-        }
-    }
-
-    /**
-     * Reads all historical running sessions from Samsung Health / Health Connect.
-     * Tries unbounded TimeRangeFilter.before(Instant.now()) first.
-     * If READ_HEALTH_DATA_HISTORY is restricted or ungranted, seamlessly falls back to 30-day window so no recent data is lost.
-     */
-    override suspend fun readAllHistoricalSessions(): List<RunSession> = withContext(Dispatchers.IO) {
-        val client = getClient() ?: return@withContext emptyList()
-        try {
-            // First attempt: all historical records
-            val records = fetchRunningRecords(client, TimeRangeFilter.before(Instant.now()))
-            val targetRecords = if (records.isNotEmpty()) {
-                records
-            } else {
-                // Secondary attempt: recent 30 days window (standard Health Connect permission without history requirement)
-                val thirtyDaysAgo = Instant.now().minus(Duration.ofDays(30))
-                fetchRunningRecords(client, TimeRangeFilter.after(thirtyDaysAgo))
-            }
-
-            parseRecordsToSessions(client, targetRecords)
-        } catch (e: SecurityException) {
-            Log.w(tag, "SecurityException on historical query, falling back to 30-day window", e)
-            try {
-                val thirtyDaysAgo = Instant.now().minus(Duration.ofDays(30))
-                val recentRecords = fetchRunningRecords(client, TimeRangeFilter.after(thirtyDaysAgo))
-                parseRecordsToSessions(client, recentRecords)
-            } catch (fallbackEx: Exception) {
-                Log.e(tag, "Fallback 30-day query failed", fallbackEx)
-                emptyList()
-            }
-        } catch (e: Exception) {
-            Log.e(tag, "Failed reading running sessions from Health Connect", e)
-            try {
-                val thirtyDaysAgo = Instant.now().minus(Duration.ofDays(30))
-                val recentRecords = fetchRunningRecords(client, TimeRangeFilter.after(thirtyDaysAgo))
-                parseRecordsToSessions(client, recentRecords)
-            } catch (e2: Exception) {
-                emptyList()
-            }
         }
     }
 
@@ -188,7 +159,7 @@ class HealthConnectRepositoryImpl(
         client: HealthConnectClient,
         filter: TimeRangeFilter
     ): List<ExerciseSessionRecord> {
-        val runningRecords = mutableListOf<ExerciseSessionRecord>()
+        val result = mutableListOf<ExerciseSessionRecord>()
         var pageToken: String? = null
         do {
             val response = client.readRecords(
@@ -198,286 +169,181 @@ class HealthConnectRepositoryImpl(
                     pageToken = pageToken
                 )
             )
-            val runs = response.records.filter { record ->
-                record.exerciseType == ExerciseSessionRecord.EXERCISE_TYPE_RUNNING ||
-                        record.exerciseType == ExerciseSessionRecord.EXERCISE_TYPE_RUNNING_TREADMILL ||
-                        record.title?.contains("run", ignoreCase = true) == true ||
-                        record.title?.contains("lari", ignoreCase = true) == true ||
-                        record.notes?.contains("run", ignoreCase = true) == true
-            }
-            runningRecords.addAll(runs)
-            pageToken = response.pageToken
+            result.addAll(response.records.filter {
+                it.exerciseType == ExerciseSessionRecord.EXERCISE_TYPE_RUNNING ||
+                    it.exerciseType == ExerciseSessionRecord.EXERCISE_TYPE_RUNNING_TREADMILL
+            })
+            pageToken = response.pageToken?.takeIf { it.isNotEmpty() }
         } while (pageToken != null)
-        return runningRecords
+        return result
     }
 
-    private suspend fun parseRecordsToSessions(
+    private suspend fun readHrSamples(
         client: HealthConnectClient,
-        records: List<ExerciseSessionRecord>
-    ): List<RunSession> {
-        val sessions = mutableListOf<RunSession>()
-        for (record in records) {
-            val durationSec = Duration.between(record.startTime, record.endTime).seconds.coerceAtLeast(1L)
-
-            // Try multi-metric aggregation; fallback to distance-only if optional permissions missing
-            var distanceMeters = 0.0
-            var totalCalories: Double? = null
-            var elevationMeters: Double? = null
-            var avgBpm: Int? = null
-            var maxBpm: Int? = null
-
-            try {
-                val aggregateResult = client.aggregate(
-                    AggregateRequest(
-                        metrics = setOf(
-                            DistanceRecord.DISTANCE_TOTAL,
-                            TotalCaloriesBurnedRecord.ENERGY_TOTAL,
-                            ElevationGainedRecord.ELEVATION_GAINED_TOTAL,
-                            HeartRateRecord.BPM_AVG,
-                            HeartRateRecord.BPM_MAX
-                        ),
-                        timeRangeFilter = TimeRangeFilter.between(record.startTime, record.endTime)
-                    )
-                )
-                distanceMeters = aggregateResult[DistanceRecord.DISTANCE_TOTAL]?.inMeters ?: 0.0
-                totalCalories = aggregateResult[TotalCaloriesBurnedRecord.ENERGY_TOTAL]?.inKilocalories
-                elevationMeters = aggregateResult[ElevationGainedRecord.ELEVATION_GAINED_TOTAL]?.inMeters
-                avgBpm = aggregateResult[HeartRateRecord.BPM_AVG]?.toInt()
-                maxBpm = aggregateResult[HeartRateRecord.BPM_MAX]?.toInt()
-            } catch (e: Exception) {
-                Log.w(tag, "Full aggregate failed for record ${record.metadata.id}, trying individual queries", e)
-                try {
-                    val distAgg = client.aggregate(
-                        AggregateRequest(
-                            metrics = setOf(DistanceRecord.DISTANCE_TOTAL),
-                            timeRangeFilter = TimeRangeFilter.between(record.startTime, record.endTime)
-                        )
-                    )
-                    distanceMeters = distAgg[DistanceRecord.DISTANCE_TOTAL]?.inMeters ?: 0.0
-                } catch (e2: Exception) {
-                    // Direct distance records query fallback
-                    try {
-                        val distRecords = client.readRecords(
-                            ReadRecordsRequest(
-                                recordType = DistanceRecord::class,
-                                timeRangeFilter = TimeRangeFilter.between(record.startTime, record.endTime)
-                            )
-                        )
-                        distanceMeters = distRecords.records.sumOf { it.distance.inMeters }
-                    } catch (e3: Exception) {
-                        Log.w(tag, "Could not retrieve distance records", e3)
-                    }
-                }
-            }
-
-            // Fallback for HR if missing in aggregate
-            if (avgBpm == null) {
-                try {
-                    val hrAgg = client.aggregate(
-                        AggregateRequest(
-                            metrics = setOf(HeartRateRecord.BPM_AVG, HeartRateRecord.BPM_MAX),
-                            timeRangeFilter = TimeRangeFilter.between(record.startTime, record.endTime)
-                        )
-                    )
-                    avgBpm = hrAgg[HeartRateRecord.BPM_AVG]?.toInt()
-                    maxBpm = hrAgg[HeartRateRecord.BPM_MAX]?.toInt()
-                } catch (_: Exception) {}
-            }
-
-            val avgPaceSec = PaceUtils.calculatePaceSeconds(distanceMeters, durationSec)
-
-            sessions.add(
-                RunSession(
-                    id = record.metadata.id,
-                    startTime = record.startTime,
-                    endTime = record.endTime,
-                    distanceMeters = distanceMeters,
-                    durationSeconds = durationSec,
-                    avgPaceSeconds = avgPaceSec,
-                    avgHeartRate = avgBpm,
-                    maxHeartRate = maxBpm,
-                    totalCalories = totalCalories,
-                    elevationGainedMeters = elevationMeters,
-                    isSeed = false
+        start: Instant,
+        end: Instant
+    ): List<Pair<Long, Int>> {
+        val samples = mutableListOf<Pair<Long, Int>>()
+        var pageToken: String? = null
+        do {
+            val response = client.readRecords(
+                ReadRecordsRequest(
+                    recordType = HeartRateRecord::class,
+                    timeRangeFilter = TimeRangeFilter.between(start, end),
+                    pageToken = pageToken
                 )
             )
+            for (record in response.records) {
+                for (sample in record.samples) {
+                    if (sample.time.isBefore(start) || sample.time.isAfter(end)) continue
+                    val offset = Duration.between(start, sample.time).seconds
+                    samples.add(offset to sample.beatsPerMinute.toInt())
+                }
+            }
+            pageToken = response.pageToken?.takeIf { it.isNotEmpty() }
+        } while (pageToken != null)
+        // Two apps can write the same second twice; keep one sample per second.
+        return samples.distinctBy { it.first }.sortedBy { it.first }
+    }
+
+    private suspend fun buildSession(
+        client: HealthConnectClient,
+        record: ExerciseSessionRecord,
+        granted: Set<String>
+    ): RunSession? {
+        val durationSec = Duration.between(record.startTime, record.endTime).seconds.coerceAtLeast(1L)
+        val range = TimeRangeFilter.between(record.startTime, record.endTime)
+
+        val metrics = mutableSetOf(DistanceRecord.DISTANCE_TOTAL)
+        if (HealthPermissions.calories in granted) metrics.add(TotalCaloriesBurnedRecord.ENERGY_TOTAL)
+        if (HealthPermissions.elevation in granted) metrics.add(ElevationGainedRecord.ELEVATION_GAINED_TOTAL)
+        val hasHr = HealthPermissions.heartRate in granted
+        if (hasHr) {
+            metrics.add(HeartRateRecord.BPM_AVG)
+            metrics.add(HeartRateRecord.BPM_MAX)
         }
-        return sessions.sortedByDescending { it.startTime }
+
+        var distanceMeters = 0.0
+        var calories: Double? = null
+        var elevation: Double? = null
+        var avgBpm: Int? = null
+        var maxBpm: Int? = null
+
+        try {
+            val agg = client.aggregate(AggregateRequest(metrics = metrics, timeRangeFilter = range))
+            distanceMeters = agg[DistanceRecord.DISTANCE_TOTAL]?.inMeters ?: 0.0
+            calories = agg[TotalCaloriesBurnedRecord.ENERGY_TOTAL]?.inKilocalories
+            elevation = agg[ElevationGainedRecord.ELEVATION_GAINED_TOTAL]?.inMeters
+            avgBpm = agg[HeartRateRecord.BPM_AVG]?.toInt()
+            maxBpm = agg[HeartRateRecord.BPM_MAX]?.toInt()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(tag, "Aggregate failed for ${record.metadata.id}, summing distance records", e)
+            distanceMeters = try {
+                client.readRecords(ReadRecordsRequest(DistanceRecord::class, range))
+                    .records.sumOf { it.distance.inMeters }
+            } catch (e2: CancellationException) {
+                throw e2
+            } catch (e2: Exception) {
+                0.0
+            }
+        }
+
+        // A run without distance is useless for pace and plan matching.
+        if (distanceMeters <= 0.0) return null
+
+        var histogramText = ""
+        if (hasHr) {
+            try {
+                val samples = readHrSamples(client, record.startTime, record.endTime)
+                if (samples.isNotEmpty()) {
+                    histogramText = HrHistogram.encode(HrHistogram.build(samples))
+                    if (avgBpm == null) avgBpm = samples.map { it.second }.average().roundToInt()
+                    if (maxBpm == null) maxBpm = samples.maxOf { it.second }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(tag, "Could not read HR samples for ${record.metadata.id}", e)
+            }
+        }
+
+        return RunSession(
+            id = record.metadata.id,
+            startTime = record.startTime,
+            endTime = record.endTime,
+            distanceMeters = distanceMeters,
+            durationSeconds = durationSec,
+            avgPaceSeconds = PaceUtils.calculatePaceSeconds(distanceMeters, durationSec),
+            avgHeartRate = avgBpm,
+            maxHeartRate = maxBpm,
+            totalCalories = calories,
+            elevationGainedMeters = elevation,
+            isSeed = false,
+            hrHistogram = histogramText
+        )
     }
 
     /**
-     * Queries running sessions within a specific historical range using TimeRangeFilter.between().
-     * Handles arbitrary historical ranges beyond 30 days.
+     * Real splits come from DistanceRecord intervals, real HR points from HeartRateRecord samples.
+     * Missing data yields empty lists, never simulated values. Demo sessions stay synthetic.
      */
-    override suspend fun readSessionsInRange(startTime: Instant, endTime: Instant): List<RunSession> = withContext(Dispatchers.IO) {
-        val client = getClient() ?: return@withContext emptyList()
-        try {
-            val runningRecords = mutableListOf<ExerciseSessionRecord>()
-            var pageToken: String? = null
+    override suspend fun getSessionSplitsAndHr(session: RunSession): SessionDetails = withContext(Dispatchers.IO) {
+        if (session.isSeed) {
+            return@withContext SessionDetails(
+                SeedDataGenerator.generateSplitsForSession(session),
+                SeedDataGenerator.generateHeartRatePoints(session)
+            )
+        }
+        val client = getClient() ?: return@withContext SessionDetails(emptyList(), emptyList())
 
+        val hrSamples: List<Pair<Long, Int>> = try {
+            readHrSamples(client, session.startTime, session.endTime)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(tag, "No HR samples for ${session.id}", e)
+            emptyList()
+        }
+
+        val splits: List<RunSplit> = try {
+            val total = session.durationSeconds.toDouble()
+            val intervals = mutableListOf<DistanceInterval>()
+            var pageToken: String? = null
             do {
                 val response = client.readRecords(
                     ReadRecordsRequest(
-                        recordType = ExerciseSessionRecord::class,
-                        timeRangeFilter = TimeRangeFilter.between(startTime, endTime),
+                        recordType = DistanceRecord::class,
+                        timeRangeFilter = TimeRangeFilter.between(session.startTime, session.endTime),
                         pageToken = pageToken
                     )
                 )
-                runningRecords.addAll(
-                    response.records.filter { it.exerciseType == ExerciseSessionRecord.EXERCISE_TYPE_RUNNING }
-                )
-                pageToken = response.pageToken
+                for (rec in response.records) {
+                    val rawStart = Duration.between(session.startTime, rec.startTime).toMillis() / 1000.0
+                    val rawEnd = Duration.between(session.startTime, rec.endTime).toMillis() / 1000.0
+                    if (rawEnd <= rawStart) continue
+                    val start = rawStart.coerceAtLeast(0.0)
+                    val end = rawEnd.coerceAtMost(total)
+                    if (end <= start) continue
+                    // Scale distance when the record sticks out of the session window.
+                    val fraction = (end - start) / (rawEnd - rawStart)
+                    intervals.add(DistanceInterval(start, end, rec.distance.inMeters * fraction))
+                }
+                pageToken = response.pageToken?.takeIf { it.isNotEmpty() }
             } while (pageToken != null)
-
-            val sessions = mutableListOf<RunSession>()
-            for (record in runningRecords) {
-                val durationSec = Duration.between(record.startTime, record.endTime).seconds.coerceAtLeast(1L)
-                val aggregateResult = client.aggregate(
-                    AggregateRequest(
-                        metrics = setOf(
-                            DistanceRecord.DISTANCE_TOTAL,
-                            TotalCaloriesBurnedRecord.ENERGY_TOTAL,
-                            ElevationGainedRecord.ELEVATION_GAINED_TOTAL,
-                            HeartRateRecord.BPM_AVG,
-                            HeartRateRecord.BPM_MAX
-                        ),
-                        timeRangeFilter = TimeRangeFilter.between(record.startTime, record.endTime)
-                    )
-                )
-
-                val distanceMeters = aggregateResult[DistanceRecord.DISTANCE_TOTAL]?.inMeters ?: 0.0
-                val totalCalories = aggregateResult[TotalCaloriesBurnedRecord.ENERGY_TOTAL]?.inKilocalories
-                val elevationMeters = aggregateResult[ElevationGainedRecord.ELEVATION_GAINED_TOTAL]?.inMeters
-                val avgBpm = aggregateResult[HeartRateRecord.BPM_AVG]?.toInt()
-                val maxBpm = aggregateResult[HeartRateRecord.BPM_MAX]?.toInt()
-                val avgPaceSec = PaceUtils.calculatePaceSeconds(distanceMeters, durationSec)
-
-                sessions.add(
-                    RunSession(
-                        id = record.metadata.id,
-                        startTime = record.startTime,
-                        endTime = record.endTime,
-                        distanceMeters = distanceMeters,
-                        durationSeconds = durationSec,
-                        avgPaceSeconds = avgPaceSec,
-                        avgHeartRate = avgBpm,
-                        maxHeartRate = maxBpm,
-                        totalCalories = totalCalories,
-                        elevationGainedMeters = elevationMeters,
-                        isSeed = false
-                    )
-                )
-            }
-            sessions.sortedByDescending { it.startTime }
+            SplitCalculator.compute(intervals, hrSamples)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            Log.e(tag, "Failed reading sessions in range $startTime - $endTime", e)
+            Log.w(tag, "Could not compute splits for ${session.id}", e)
             emptyList()
         }
-    }
 
-    /**
-     * Aggregates running metrics directly across a historical window using HealthConnectClient aggregate API.
-     */
-    override suspend fun aggregateHistoricalWindow(startTime: Instant, endTime: Instant): HistoricalAggregateResult = withContext(Dispatchers.IO) {
-        val client = getClient()
-        if (client == null) {
-            return@withContext HistoricalAggregateResult(
-                startTime = startTime,
-                endTime = endTime,
-                totalDistanceMeters = 0.0,
-                totalCaloriesKcal = null,
-                totalElevationMeters = null,
-                avgHeartRateBpm = null,
-                maxHeartRateBpm = null
-            )
-        }
-
-        try {
-            val aggregateResult = client.aggregate(
-                AggregateRequest(
-                    metrics = setOf(
-                        DistanceRecord.DISTANCE_TOTAL,
-                        TotalCaloriesBurnedRecord.ENERGY_TOTAL,
-                        ElevationGainedRecord.ELEVATION_GAINED_TOTAL,
-                        HeartRateRecord.BPM_AVG,
-                        HeartRateRecord.BPM_MAX
-                    ),
-                    timeRangeFilter = TimeRangeFilter.between(startTime, endTime)
-                )
-            )
-
-            HistoricalAggregateResult(
-                startTime = startTime,
-                endTime = endTime,
-                totalDistanceMeters = aggregateResult[DistanceRecord.DISTANCE_TOTAL]?.inMeters ?: 0.0,
-                totalCaloriesKcal = aggregateResult[TotalCaloriesBurnedRecord.ENERGY_TOTAL]?.inKilocalories,
-                totalElevationMeters = aggregateResult[ElevationGainedRecord.ELEVATION_GAINED_TOTAL]?.inMeters,
-                avgHeartRateBpm = aggregateResult[HeartRateRecord.BPM_AVG]?.toInt(),
-                maxHeartRateBpm = aggregateResult[HeartRateRecord.BPM_MAX]?.toInt()
-            )
-        } catch (e: Exception) {
-            Log.e(tag, "Failed aggregating historical window", e)
-            HistoricalAggregateResult(
-                startTime = startTime,
-                endTime = endTime,
-                totalDistanceMeters = 0.0,
-                totalCaloriesKcal = null,
-                totalElevationMeters = null,
-                avgHeartRateBpm = null,
-                maxHeartRateBpm = null
-            )
-        }
-    }
-
-    /**
-     * Reads raw HeartRateRecord samples and calculates per-km splits.
-     * If session is synthetic demo data or samples are unavailable, provides deterministic splits & curves.
-     */
-    override suspend fun getSessionSplitsAndHr(session: RunSession): Pair<List<RunSplit>, List<HeartRatePoint>> = withContext(Dispatchers.IO) {
-        val client = getClient()
-        if (session.isSeed || client == null) {
-            return@withContext Pair(
-                SeedDataGenerator.generateSplitsForSession(session),
-                SeedDataGenerator.generateHeartRatePoints(session)
-            )
-        }
-
-        try {
-            val hrResponse = client.readRecords(
-                ReadRecordsRequest(
-                    recordType = HeartRateRecord::class,
-                    timeRangeFilter = TimeRangeFilter.between(session.startTime, session.endTime)
-                )
-            )
-
-            val hrPoints = mutableListOf<HeartRatePoint>()
-            for (hrRecord in hrResponse.records) {
-                for (sample in hrRecord.samples) {
-                    // CRITICAL FIX: Only include samples strictly within the workout session's duration!
-                    if (!sample.time.isBefore(session.startTime) && !sample.time.isAfter(session.endTime)) {
-                        val offsetSec = Duration.between(session.startTime, sample.time).seconds
-                        if (offsetSec in 0L..session.durationSeconds) {
-                            hrPoints.add(HeartRatePoint(offsetSec, sample.beatsPerMinute.toInt()))
-                        }
-                    }
-                }
-            }
-
-            val finalHrPoints = if (hrPoints.size >= 5) {
-                hrPoints.sortedBy { it.offsetSeconds }
-            } else {
-                SeedDataGenerator.generateHeartRatePoints(session)
-            }
-
-            val splits = SeedDataGenerator.generateSplitsForSession(session)
-            Pair(splits, finalHrPoints)
-        } catch (e: Exception) {
-            Log.w(tag, "Falling back to simulated splits for session ${session.id}", e)
-            Pair(
-                SeedDataGenerator.generateSplitsForSession(session),
-                SeedDataGenerator.generateHeartRatePoints(session)
-            )
-        }
+        SessionDetails(
+            splits = splits,
+            hrPoints = hrSamples.map { HeartRatePoint(it.first, it.second) }
+        )
     }
 
     private fun RunSession.toEntity() = CachedSessionEntity(
@@ -491,6 +357,7 @@ class HealthConnectRepositoryImpl(
         maxHeartRate = maxHeartRate,
         totalCalories = totalCalories,
         elevationGainedMeters = elevationGainedMeters,
-        isSeed = isSeed
+        isSeed = isSeed,
+        hrHistogram = hrHistogram
     )
 }

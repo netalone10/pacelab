@@ -1,33 +1,26 @@
 package com.example.data.repository
 
 import android.content.Context
-import com.example.data.health.HealthConnectManager
 import com.example.data.health.HealthConnectStatus
 import com.example.data.health.SeedDataGenerator
 import com.example.data.local.CachedSessionEntity
+import com.example.data.local.IgnoredSessionEntity
 import com.example.data.local.PaceLabDao
 import com.example.data.local.PaceLabDatabase
 import com.example.data.local.PlanStateEntity
 import com.example.data.local.UserSettingsEntity
-import com.example.data.model.HeartRatePoint
 import com.example.data.model.RaceDistance
 import com.example.data.model.RunSession
-import com.example.data.model.RunSplit
 import com.example.data.model.UserSettings
 import com.example.data.model.WeeklySummary
-import com.example.util.HrZoneCalculator
-import com.example.util.HrZones
-import com.example.util.PaceUtils
+import com.example.util.WeeklySummaryCalculator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
-import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
-import java.time.ZoneId
-import java.time.temporal.TemporalAdjusters
 
 class PaceLabRepository(
     private val context: Context,
@@ -60,19 +53,21 @@ class PaceLabRepository(
         return healthConnectRepository.getAvailabilityStatus()
     }
 
-    suspend fun hasHealthPermissions(): Boolean {
-        return healthConnectRepository.hasAllPermissions()
+    suspend fun getGrantedPermissions(): Set<String> {
+        return healthConnectRepository.getGrantedPermissions()
     }
 
-    suspend fun syncData(forceSeedDemo: Boolean = false): Boolean {
-        val result = healthConnectRepository.syncAllRunningData(forceSeedDemo)
-        return result.isSuccess && (result.getOrNull() ?: 0) > 0
+    suspend fun syncData(): Result<SyncSummary> {
+        return healthConnectRepository.syncAllRunningData()
     }
 
+    /** Demo data is only inserted while no real run is cached, so it never mixes with real data. */
     suspend fun seedDemoData() {
         withContext(Dispatchers.IO) {
-            val demoSessions = SeedDataGenerator.generateDemoSessions()
-            dao.insertSessions(demoSessions.map { it.toEntity() })
+            if (dao.countRealSessions() == 0) {
+                val demoSessions = SeedDataGenerator.generateDemoSessions()
+                dao.insertSessions(demoSessions.map { it.toEntity() })
+            }
         }
     }
 
@@ -82,19 +77,21 @@ class PaceLabRepository(
         }
     }
 
-    suspend fun getSessionDetails(session: RunSession): Pair<List<RunSplit>, List<HeartRatePoint>> {
+    suspend fun getSessionDetails(session: RunSession): SessionDetails {
         return healthConnectRepository.getSessionSplitsAndHr(session)
     }
 
     suspend fun deleteSession(sessionId: String) {
         withContext(Dispatchers.IO) {
+            dao.ignoreSessions(listOf(IgnoredSessionEntity(sessionId)))
             dao.deleteSession(sessionId)
         }
     }
 
     suspend fun deleteSessions(sessionIds: List<String>) {
         withContext(Dispatchers.IO) {
-            dao.deleteSessions(sessionIds)
+            dao.ignoreSessions(sessionIds.map { IgnoredSessionEntity(it) })
+            sessionIds.chunked(500).forEach { dao.deleteSessions(it) }
         }
     }
 
@@ -136,107 +133,12 @@ class PaceLabRepository(
         }
     }
 
-    /**
-     * Computes the weekly summary for a given Monday-Sunday week interval.
-     */
+    /** Monday to Sunday summary; see [WeeklySummaryCalculator]. */
     fun computeWeeklySummary(
         allSessions: List<RunSession>,
         weekStartMonday: LocalDate,
         userSettings: UserSettings
-    ): WeeklySummary {
-        val weekEndSunday = weekStartMonday.plusDays(6)
-        val zone = ZoneId.systemDefault()
-
-        val weekStartInstant = weekStartMonday.atStartOfDay(zone).toInstant()
-        val weekEndInstant = weekEndSunday.plusDays(1).atStartOfDay(zone).toInstant()
-
-        val weekSessions = allSessions.filter {
-            it.startTime >= weekStartInstant && it.startTime < weekEndInstant
-        }
-
-        val totalDistMeters = weekSessions.sumOf { it.distanceMeters }
-        val totalDurationSec = weekSessions.sumOf { it.durationSeconds }
-        val runCount = weekSessions.size
-
-        val avgPace = if (totalDistMeters > 0) {
-            PaceUtils.calculatePaceSeconds(totalDistMeters, totalDurationSec)
-        } else 0
-
-        val hrList = weekSessions.mapNotNull { it.avgHeartRate }
-        val avgHr = if (hrList.isNotEmpty()) hrList.average().toInt() else null
-
-        // Daily distance breakdown (Monday to Sunday)
-        val dailyMap = mutableMapOf<DayOfWeek, Double>()
-        DayOfWeek.values().forEach { dailyMap[it] = 0.0 }
-        weekSessions.forEach { session ->
-            val day = session.startTime.atZone(zone).dayOfWeek
-            dailyMap[day] = (dailyMap[day] ?: 0.0) + (session.distanceMeters / 1000.0)
-        }
-
-        // Compare with previous week
-        val prevWeekStart = weekStartMonday.minusWeeks(1)
-        val prevWeekEndInstant = weekStartInstant
-        val prevWeekStartInstant = prevWeekStart.atStartOfDay(zone).toInstant()
-        val prevSessions = allSessions.filter {
-            it.startTime >= prevWeekStartInstant && it.startTime < prevWeekEndInstant
-        }
-        val prevDist = prevSessions.sumOf { it.distanceMeters }
-        val diffPercent = if (prevDist > 0) {
-            ((totalDistMeters - prevDist) / prevDist) * 100.0
-        } else null
-
-        // Aggregate HR zone distribution
-        val zones = HrZones(
-            z1Max = userSettings.z1Max,
-            z2Min = userSettings.z2Min,
-            z2Max = userSettings.z2Max,
-            z3Min = userSettings.z3Min,
-            z3Max = userSettings.z3Max,
-            z4Min = userSettings.z4Min,
-            z4Max = userSettings.z4Max,
-            maxHr = userSettings.maxHr
-        )
-
-        // Synthesize zone distribution across week runs
-        var totalZ1 = 0L
-        var totalZ2 = 0L
-        var totalZ3 = 0L
-        var totalZ4 = 0L
-        var totalZ5 = 0L
-
-        weekSessions.forEach { session ->
-            val dur = session.durationSeconds
-            val hr = session.avgHeartRate ?: 140
-            when (HrZoneCalculator.determineZone(hr, zones)) {
-                1 -> totalZ1 += dur
-                2 -> totalZ2 += dur
-                3 -> totalZ3 += dur
-                4 -> totalZ4 += dur
-                5 -> totalZ5 += dur
-            }
-        }
-
-        val hrDistribution = com.example.util.HrZoneDistribution(
-            z1Seconds = totalZ1,
-            z2Seconds = totalZ2,
-            z3Seconds = totalZ3,
-            z4Seconds = totalZ4,
-            z5Seconds = totalZ5
-        )
-
-        return WeeklySummary(
-            weekStartMonday = weekStartMonday,
-            weekEndSunday = weekEndSunday,
-            totalDistanceMeters = totalDistMeters,
-            runCount = runCount,
-            totalDurationSeconds = totalDurationSec,
-            avgPaceSeconds = avgPace,
-            avgHeartRate = avgHr,
-            dailyDistanceKm = dailyMap,
-            hrDistribution = hrDistribution,
-            comparisonPercentVsPrevious = diffPercent
-        )
-    }
+    ): WeeklySummary = WeeklySummaryCalculator.compute(allSessions, weekStartMonday, userSettings)
 
     private fun CachedSessionEntity.toDomainModel() = RunSession(
         id = id,
@@ -249,7 +151,8 @@ class PaceLabRepository(
         maxHeartRate = maxHeartRate,
         totalCalories = totalCalories,
         elevationGainedMeters = elevationGainedMeters,
-        isSeed = isSeed
+        isSeed = isSeed,
+        hrHistogram = hrHistogram
     )
 
     private fun RunSession.toEntity() = CachedSessionEntity(
@@ -263,7 +166,8 @@ class PaceLabRepository(
         maxHeartRate = maxHeartRate,
         totalCalories = totalCalories,
         elevationGainedMeters = elevationGainedMeters,
-        isSeed = isSeed
+        isSeed = isSeed,
+        hrHistogram = hrHistogram
     )
 
     private fun UserSettingsEntity.toDomainModel() = UserSettings(

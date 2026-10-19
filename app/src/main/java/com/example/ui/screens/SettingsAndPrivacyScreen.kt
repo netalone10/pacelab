@@ -48,12 +48,15 @@ import com.example.ui.theme.TextTertiary
 import com.example.ui.theme.TextWhite
 import com.example.ui.theme.VoltOnPrimary
 import com.example.ui.theme.VoltPrimary
+import com.example.BuildConfig
 import com.example.util.HrZoneCalculator
 
 @Composable
 fun SettingsAndPrivacyScreen(
     userSettings: UserSettings,
     hasHealthPermissions: Boolean,
+    hasAllHealthPermissions: Boolean,
+    syncError: String?,
     onRequestPermissions: () -> Unit,
     onOpenPlayStore: () -> Unit,
     onLoadDemoData: () -> Unit,
@@ -259,14 +262,26 @@ fun SettingsAndPrivacyScreen(
                     Spacer(modifier = Modifier.height(8.dp))
 
                     Text(
-                        text = if (hasHealthPermissions) {
-                            "Status: Connected and authorized. Read-only running sessions and metrics are active."
-                        } else {
-                            "Status: Permissions not yet granted or Health Connect not configured."
+                        text = when {
+                            hasHealthPermissions && hasAllHealthPermissions ->
+                                "Status: Connected. All read permissions granted (heart rate, calories, elevation, history)."
+                            hasHealthPermissions ->
+                                "Status: Connected with limited access. Runs sync, but some data (heart rate, calories, elevation or history older than 30 days) is not permitted. Tap Manage Permissions to allow it."
+                            else ->
+                                "Status: Permissions not yet granted or Health Connect not configured."
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = if (hasHealthPermissions) StatusSuccess else TextWhite
                     )
+
+                    if (syncError != null) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Sync error: $syncError",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
 
                     Spacer(modifier = Modifier.height(12.dp))
 
@@ -282,12 +297,14 @@ fun SettingsAndPrivacyScreen(
                             Text("Manage Permissions")
                         }
 
-                        OutlinedButton(
-                            onClick = onLoadDemoData,
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = VoltPrimary),
-                            modifier = Modifier.weight(1f).testTag("settings_reload_demo_button")
-                        ) {
-                            Text("Seed Demo Data")
+                        if (BuildConfig.DEBUG) {
+                            OutlinedButton(
+                                onClick = onLoadDemoData,
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = VoltPrimary),
+                                modifier = Modifier.weight(1f).testTag("settings_reload_demo_button")
+                            ) {
+                                Text("Seed Demo Data")
+                            }
                         }
                     }
                 }
@@ -329,7 +346,8 @@ fun SettingsAndPrivacyScreen(
                     Text(
                         text = "• PaceLab accesses Health Connect strictly in READ-ONLY mode for exercise sessions (running), distance, speed, heart rate, elevation, and calories.\n" +
                                 "• Zero External Transmissions: All pace predictions, split calculations, and weekly workload charts run locally on your device. PaceLab has NO backend server, NO advertising SDKs, and NO cloud telemetry.\n" +
-                                "• Full Historical Access (READ_HEALTH_DATA_HISTORY): Retrieves your entire recorded running history from the beginning of time without 30-day restrictions, allowing long-term progress tracking and accurate race pace predictions.\n" +
+                                "• Historical Access (READ_HEALTH_DATA_HISTORY): Optional. If you allow it, PaceLab can read runs older than 30 days for long-term trends. Without it, only the recent window Health Connect exposes is available.\n" +
+                                "• Runs are cached in a local database on this device. Android backup is disabled for this app, so this data is not copied to cloud backup.\n" +
                                 "• You can revoke permission at any time in Android Settings > Health Connect.",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary,

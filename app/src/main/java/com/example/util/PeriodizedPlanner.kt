@@ -1,10 +1,10 @@
 package com.example.util
 
-import com.example.data.model.RaceDistance
 import com.example.data.model.RaceEvent
 import com.example.data.model.RunSession
 import java.time.DayOfWeek
 import java.time.LocalDate
+import java.time.ZoneId
 import java.time.temporal.ChronoUnit
 import java.time.temporal.TemporalAdjusters
 import kotlin.math.abs
@@ -32,6 +32,9 @@ data class PeriodizedPlanWeek(
 )
 
 object PeriodizedPlanner {
+
+    /** A plan never spans more than this many weeks; farther races only plan the final block. */
+    const val MAX_PLAN_WEEKS = 16
 
     /**
      * Identifies duplicate sessions that were synced from multiple trackers.
@@ -76,11 +79,42 @@ object PeriodizedPlanner {
     }
 
     /**
-     * Generates an adaptive multi-week periodized plan leading up to a target race date.
-     * Features:
-     * - Base, Build, Peak, and a 1-Week Sharp Taper immediately prior to race day.
-     * - Max 10% volume progression across base/build phases.
-     * - 4th-week recovery cycle during long blocks.
+     * Starting weekly volume for a plan: the average of the completed weeks in the last four
+     * weeks of real training (current, unfinished week excluded). The plan therefore starts from
+     * what the runner actually does and stays stable while the current week fills up.
+     */
+    fun baseWeeklyVolumeKm(
+        sessions: List<RunSession>,
+        planMonday: LocalDate,
+        daysPerWeek: Int,
+        zone: ZoneId = ZoneId.systemDefault()
+    ): Double {
+        val fallback = daysPerWeek.coerceIn(2, 4) * 4.0
+        if (sessions.isEmpty()) return fallback
+
+        val windowStart = planMonday.minusWeeks(4)
+        val inWindow = sessions
+            .map { it.startTime.atZone(zone).toLocalDate() to it.distanceMeters }
+            .filter { !it.first.isBefore(windowStart) && it.first.isBefore(planMonday) }
+        if (inWindow.isEmpty()) return fallback
+
+        val firstMonday = inWindow.minOf { it.first }.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+        val weeks = ChronoUnit.WEEKS.between(firstMonday, planMonday).toInt().coerceIn(1, 4)
+        val totalKm = inWindow.sumOf { it.second } / 1000.0
+        return (totalKm / weeks).coerceAtLeast(5.0)
+    }
+
+    /**
+     * Generates a periodized plan leading up to the target race date.
+     *
+     * Volume rules (kilometres per week):
+     * - Loading weeks grow by at most 10% over the previous loading week.
+     * - Every 4th week is a deload at 80% of the last loading week.
+     * - The week after a deload resumes at the pre-deload volume, with no extra jump.
+     * - Race week (taper) is 50% of the last loading week, plus the race itself.
+     *
+     * The plan is anchored to [currentMonday] (this week), or to the last [MAX_PLAN_WEEKS] weeks
+     * before the race when the race is farther away. The final plan week always contains the race.
      */
     fun generatePeriodizedPlan(
         raceEvent: RaceEvent?,
@@ -90,28 +124,37 @@ object PeriodizedPlanner {
         zones: HrZones = HrZones(),
         currentMonday: LocalDate = LocalDate.now().with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
     ): List<PeriodizedPlanWeek> {
+        val validDays = daysPerWeek.coerceIn(2, 4)
         if (raceEvent == null) {
-            // Default 4-week progression if no race is scheduled
-            return generateStandardFourWeekPlan(baseWeeklyVolumeKm, daysPerWeek, targets, currentMonday)
+            return generateStandardPlan(baseWeeklyVolumeKm, validDays, targets, zones, currentMonday)
         }
 
-        // Calculate weeks to target race
         val raceMonday = raceEvent.raceDate.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
-        val daysUntilRaceMonday = ChronoUnit.DAYS.between(currentMonday, raceMonday)
-        val computedWeeks = ((daysUntilRaceMonday / 7) + 1).toInt().coerceIn(2, 16)
+        if (raceMonday.isBefore(currentMonday)) {
+            // The race is already in the past, fall back to a plain 4-week block.
+            return generateStandardPlan(baseWeeklyVolumeKm, validDays, targets, zones, currentMonday)
+        }
 
-        val totalWeeks = computedWeeks
-        val validDays = daysPerWeek.coerceIn(2, 4)
+        val weeksToRace = (ChronoUnit.WEEKS.between(currentMonday, raceMonday) + 1).toInt()
+        val totalWeeks = weeksToRace.coerceIn(1, MAX_PLAN_WEEKS)
+        val startMonday = if (weeksToRace > MAX_PLAN_WEEKS) {
+            raceMonday.minusWeeks((MAX_PLAN_WEEKS - 1).toLong())
+        } else {
+            currentMonday
+        }
 
-        // Peak volume occurs at Week (totalWeeks - 1)
-        val peakMultiplier = Math.pow(1.10, minOf(totalWeeks - 2, 4).toDouble())
-        val peakVolumeKm = baseWeeklyVolumeKm * peakMultiplier
+        // Highest volume the build is allowed to reach: +10% per loading week, at most 4 steps.
+        val peakVolumeKm = baseWeeklyVolumeKm * Math.pow(1.10, (totalWeeks - 2).coerceIn(0, 4).toDouble())
 
-        return (1..totalWeeks).map { weekIndex ->
-            val weekMonday = currentMonday.plusWeeks((weekIndex - 1).toLong())
-            val weekSunday = weekMonday.plusDays(6)
+        val weeks = ArrayList<PeriodizedPlanWeek>(totalWeeks)
+        var lastLoadKm = baseWeeklyVolumeKm
+        var previousWasDeload = false
+
+        for (weekIndex in 1..totalWeeks) {
+            val weekMonday = startMonday.plusWeeks((weekIndex - 1).toLong())
             val isRaceWeek = weekIndex == totalWeeks
             val isPeakWeek = weekIndex == totalWeeks - 1 && totalWeeks >= 3
+            val isDeloadWeek = weekIndex % 4 == 0 && !isPeakWeek && !isRaceWeek
 
             val phase = when {
                 isRaceWeek -> TrainingPhase.TAPER
@@ -120,183 +163,179 @@ object PeriodizedPlanner {
                 else -> TrainingPhase.BASE
             }
 
-            val isDeloadWeek = weekIndex % 4 == 0 && !isPeakWeek && !isRaceWeek
-
-            // Calculate weekly volume:
-            val volumeKm = when {
-                isRaceWeek -> {
-                    // 1-WEEK SHARP TAPER: ~50% of peak volume (excluding the actual race)
-                    (peakVolumeKm * 0.50 * 100).roundToInt() / 100.0
-                }
-                isPeakWeek -> {
-                    (peakVolumeKm * 100).roundToInt() / 100.0
-                }
-                isDeloadWeek -> {
-                    val prevVol = baseWeeklyVolumeKm * Math.pow(1.10, ((weekIndex - 2).coerceAtLeast(0)).toDouble())
-                    (prevVol * 0.80 * 100).roundToInt() / 100.0
-                }
-                else -> {
-                    val progressCount = (weekIndex - 1) - (weekIndex / 4)
-                    val v = baseWeeklyVolumeKm * Math.pow(1.10, progressCount.coerceAtLeast(0).toDouble())
-                    (minOf(v, peakVolumeKm) * 100).roundToInt() / 100.0
-                }
+            val rawVolumeKm = when {
+                isRaceWeek -> lastLoadKm * 0.50
+                isDeloadWeek -> lastLoadKm * PlanGenerator.DELOAD_FACTOR
+                previousWasDeload -> minOf(lastLoadKm, peakVolumeKm)
+                isPeakWeek -> minOf(peakVolumeKm, lastLoadKm * PlanGenerator.MAX_PROGRESSION_RATE)
+                weekIndex == 1 -> baseWeeklyVolumeKm
+                else -> minOf(lastLoadKm * PlanGenerator.MAX_PROGRESSION_RATE, peakVolumeKm)
             }
+            val volumeKm = (rawVolumeKm * 100).roundToInt() / 100.0
+
+            if (!isRaceWeek && !isDeloadWeek) lastLoadKm = volumeKm
+            previousWasDeload = isDeloadWeek
 
             val weeklyMeters = volumeKm * 1000.0
-            val days = generateDaysForPeriodizedWeek(
-                daysPerWeek = validDays,
-                weeklyMeters = weeklyMeters,
-                targets = targets,
-                phase = phase,
-                isRaceWeek = isRaceWeek,
-                raceEvent = raceEvent
-            )
+            val days = if (isRaceWeek) {
+                raceWeekDays(weeklyMeters, targets, zones, raceEvent)
+            } else {
+                val qualityType = if (phase == TrainingPhase.PEAK && !isDeloadWeek) {
+                    WorkoutType.INTERVALS
+                } else {
+                    WorkoutType.TEMPO
+                }
+                standardDays(validDays, weeklyMeters, targets, zones, qualityType)
+            }
 
-            PeriodizedPlanWeek(
-                weekIndex = weekIndex,
-                totalWeeks = totalWeeks,
-                weekStartMonday = weekMonday,
-                weekEndSunday = weekSunday,
-                phase = phase,
-                isDeloadWeek = isDeloadWeek,
-                isRaceWeek = isRaceWeek,
-                totalTargetDistanceMeters = if (isRaceWeek) (weeklyMeters + raceEvent.distance.meters) else weeklyMeters,
-                days = days
+            weeks.add(
+                PeriodizedPlanWeek(
+                    weekIndex = weekIndex,
+                    totalWeeks = totalWeeks,
+                    weekStartMonday = weekMonday,
+                    weekEndSunday = weekMonday.plusDays(6),
+                    phase = phase,
+                    isDeloadWeek = isDeloadWeek,
+                    isRaceWeek = isRaceWeek,
+                    totalTargetDistanceMeters = if (isRaceWeek) weeklyMeters + raceEvent.distance.meters else weeklyMeters,
+                    days = days
+                )
             )
         }
+        return weeks
     }
 
-    private fun generateStandardFourWeekPlan(
+    private fun generateStandardPlan(
         baseVolumeKm: Double,
         daysPerWeek: Int,
         targets: PredictedTargets,
+        zones: HrZones,
         currentMonday: LocalDate
     ): List<PeriodizedPlanWeek> {
         val volumes = PlanGenerator.calculateWeeklyVolumes(baseVolumeKm)
         return volumes.mapIndexed { index, volKm ->
             val weekIndex = index + 1
-            val weekMonday = currentMonday.plusWeeks((weekIndex - 1).toLong())
-            val weekSunday = weekMonday.plusDays(6)
             val isDeload = weekIndex == 4
-            val phase = if (isDeload) TrainingPhase.TAPER else TrainingPhase.BASE
+            val weekMonday = currentMonday.plusWeeks(index.toLong())
             val meters = volKm * 1000.0
-
-            val days = when (daysPerWeek) {
-                2 -> listOf(
-                    PlanDayItem(
-                        dayOfWeek = DayOfWeek.TUESDAY,
-                        type = WorkoutType.TEMPO,
-                        targetDistanceMeters = roundTo500m(meters * 0.40),
-                        minPaceSec = targets.tempoPaceRange.first,
-                        maxPaceSec = targets.tempoPaceRange.second,
-                        targetHrZone = "Z3 (141-160 bpm)"
-                    ),
-                    PlanDayItem(
-                        dayOfWeek = DayOfWeek.SATURDAY,
-                        type = WorkoutType.LONG_RUN,
-                        targetDistanceMeters = roundTo500m(meters * 0.60),
-                        minPaceSec = targets.longRunPaceRange.first,
-                        maxPaceSec = targets.longRunPaceRange.second,
-                        targetHrZone = "Z2 (118-140 bpm)"
-                    )
-                )
-                4 -> listOf(
-                    PlanDayItem(DayOfWeek.TUESDAY, WorkoutType.EASY, roundTo500m(meters * 0.22), targets.easyPaceRange.first, targets.easyPaceRange.second, "Z2 (118-140 bpm)"),
-                    PlanDayItem(DayOfWeek.THURSDAY, if (isDeload) WorkoutType.TEMPO else WorkoutType.INTERVALS, roundTo500m(meters * 0.25), targets.tempoPaceRange.first, targets.tempoPaceRange.second, "Z3-Z4"),
-                    PlanDayItem(DayOfWeek.SATURDAY, WorkoutType.EASY, roundTo500m(meters * 0.18), targets.easyPaceRange.first, targets.easyPaceRange.second, "Z1-Z2 (<140 bpm)"),
-                    PlanDayItem(DayOfWeek.SUNDAY, WorkoutType.LONG_RUN, roundTo500m(meters * 0.35), targets.longRunPaceRange.first, targets.longRunPaceRange.second, "Z2 (118-140 bpm)")
-                )
-                else -> listOf(
-                    PlanDayItem(DayOfWeek.TUESDAY, WorkoutType.EASY, roundTo500m(meters * 0.30), targets.easyPaceRange.first, targets.easyPaceRange.second, "Z2 (118-140 bpm)"),
-                    PlanDayItem(DayOfWeek.THURSDAY, if (isDeload) WorkoutType.TEMPO else WorkoutType.INTERVALS, roundTo500m(meters * 0.25), targets.tempoPaceRange.first, targets.tempoPaceRange.second, "Z3-Z4"),
-                    PlanDayItem(DayOfWeek.SATURDAY, WorkoutType.LONG_RUN, roundTo500m(meters * 0.45), targets.longRunPaceRange.first, targets.longRunPaceRange.second, "Z2 (118-140 bpm)")
-                )
-            }
+            val qualityType = if (isDeload) WorkoutType.TEMPO else WorkoutType.INTERVALS
 
             PeriodizedPlanWeek(
                 weekIndex = weekIndex,
-                totalWeeks = 4,
+                totalWeeks = volumes.size,
                 weekStartMonday = weekMonday,
-                weekEndSunday = weekSunday,
-                phase = phase,
+                weekEndSunday = weekMonday.plusDays(6),
+                phase = TrainingPhase.BASE,
                 isDeloadWeek = isDeload,
                 isRaceWeek = false,
                 totalTargetDistanceMeters = meters,
-                days = days
+                days = standardDays(daysPerWeek, meters, targets, zones, qualityType)
             )
         }
     }
 
-    private fun generateDaysForPeriodizedWeek(
-        daysPerWeek: Int,
+    /**
+     * Race week: a short shakeout early in the week, light openers the day before, then the race.
+     * Workouts are only placed on days before the race, so nothing collides with race day.
+     */
+    private fun raceWeekDays(
         weeklyMeters: Double,
         targets: PredictedTargets,
-        phase: TrainingPhase,
-        isRaceWeek: Boolean,
-        raceEvent: RaceEvent?
+        zones: HrZones,
+        raceEvent: RaceEvent
     ): List<PlanDayItem> {
-        if (isRaceWeek && raceEvent != null) {
-            // 1-WEEK SHARP TAPER WORKOUTS:
-            // Short shakeout runs and light stride openers to arrive primed on race day
-            val raceDayOfWeek = raceEvent.raceDate.dayOfWeek
-            val racePaceSec = targets.predictedPaceSeconds
-            val raceDayItem = PlanDayItem(
-                dayOfWeek = raceDayOfWeek,
+        val raceIndex = raceEvent.raceDate.dayOfWeek.value // Monday = 1 ... Sunday = 7
+        val racePaceSec = targets.predictedPaceSeconds
+        val items = ArrayList<PlanDayItem>(3)
+
+        val shakeoutIndex = raceIndex - 3
+        if (shakeoutIndex >= 1) {
+            items.add(
+                PlanDayItem(
+                    dayOfWeek = DayOfWeek.of(shakeoutIndex),
+                    type = WorkoutType.EASY,
+                    targetDistanceMeters = roundTo500m(weeklyMeters * 0.60).coerceAtLeast(3000.0),
+                    minPaceSec = targets.easyPaceRange.first,
+                    maxPaceSec = targets.easyPaceRange.second,
+                    targetHrZone = "${HrZoneCalculator.easyLabel(zones)} light shakeout"
+                )
+            )
+        }
+
+        val openersIndex = raceIndex - 1
+        if (openersIndex >= 1) {
+            items.add(
+                PlanDayItem(
+                    dayOfWeek = DayOfWeek.of(openersIndex),
+                    type = WorkoutType.TEMPO,
+                    targetDistanceMeters = roundTo500m(weeklyMeters * 0.40).coerceAtLeast(2500.0),
+                    minPaceSec = targets.tempoPaceRange.first,
+                    maxPaceSec = targets.tempoPaceRange.second,
+                    targetHrZone = "Short strides, neuromuscular tune-up"
+                )
+            )
+        }
+
+        items.add(
+            PlanDayItem(
+                dayOfWeek = raceEvent.raceDate.dayOfWeek,
                 type = WorkoutType.LONG_RUN,
                 targetDistanceMeters = raceEvent.distance.meters,
                 minPaceSec = racePaceSec,
                 maxPaceSec = (racePaceSec * 1.03).roundToInt(),
-                targetHrZone = "Target Race Pace · ${raceEvent.raceName}"
+                targetHrZone = "Target race pace, ${raceEvent.raceName}"
             )
+        )
+        return items
+    }
 
-            val shakeoutDistance = roundTo500m(weeklyMeters * 0.60).coerceAtLeast(3000.0)
-            val easyShakeout = PlanDayItem(
-                dayOfWeek = if (raceDayOfWeek == DayOfWeek.SUNDAY) DayOfWeek.TUESDAY else DayOfWeek.MONDAY,
-                type = WorkoutType.EASY,
-                targetDistanceMeters = shakeoutDistance,
-                minPaceSec = targets.easyPaceRange.first,
-                maxPaceSec = targets.easyPaceRange.second,
-                targetHrZone = "Z1-Z2 Light Shakeout"
-            )
+    /**
+     * Regular training week for 2, 3 or 4 running days. Heart rate zone text always follows the
+     * thresholds the user configured, and pace ranges always match the workout type.
+     */
+    private fun standardDays(
+        daysPerWeek: Int,
+        weeklyMeters: Double,
+        targets: PredictedTargets,
+        zones: HrZones,
+        qualityType: WorkoutType
+    ): List<PlanDayItem> {
+        val qualityIsIntervals = qualityType == WorkoutType.INTERVALS
+        val qualityPaces = if (qualityIsIntervals) targets.intervalPaceRange else targets.tempoPaceRange
+        val qualityHr = HrZoneCalculator.label(if (qualityIsIntervals) 4 else 3, zones)
+        val aerobicHr = HrZoneCalculator.label(2, zones)
+        val recoveryHr = HrZoneCalculator.easyLabel(zones)
 
-            val stridesDistance = roundTo500m(weeklyMeters * 0.40).coerceAtLeast(2500.0)
-            val preRaceStrides = PlanDayItem(
-                dayOfWeek = if (raceDayOfWeek == DayOfWeek.SUNDAY) DayOfWeek.THURSDAY else DayOfWeek.WEDNESDAY,
-                type = WorkoutType.TEMPO,
-                targetDistanceMeters = stridesDistance,
-                minPaceSec = targets.tempoPaceRange.first,
-                maxPaceSec = targets.tempoPaceRange.second,
-                targetHrZone = "Short Strides / Neuromuscular Tune-up"
-            )
-
-            return listOf(easyShakeout, preRaceStrides, raceDayItem)
-        }
-
-        // Standard phase workouts
-        val qualityType = when (phase) {
-            TrainingPhase.PEAK -> WorkoutType.INTERVALS
-            TrainingPhase.BUILD -> WorkoutType.TEMPO
-            else -> WorkoutType.TEMPO
-        }
-
-        val qualityPaces = if (qualityType == WorkoutType.INTERVALS) targets.intervalPaceRange else targets.tempoPaceRange
-        val qualityHr = if (qualityType == WorkoutType.INTERVALS) "Z4 (161-179 bpm)" else "Z3 (141-160 bpm)"
+        fun item(
+            day: DayOfWeek,
+            type: WorkoutType,
+            share: Double,
+            paces: Pair<Int, Int>,
+            hr: String
+        ) = PlanDayItem(
+            dayOfWeek = day,
+            type = type,
+            targetDistanceMeters = roundTo500m(weeklyMeters * share),
+            minPaceSec = paces.first,
+            maxPaceSec = paces.second,
+            targetHrZone = hr
+        )
 
         return when (daysPerWeek) {
             2 -> listOf(
-                PlanDayItem(DayOfWeek.TUESDAY, qualityType, roundTo500m(weeklyMeters * 0.40), qualityPaces.first, qualityPaces.second, qualityHr),
-                PlanDayItem(DayOfWeek.SATURDAY, WorkoutType.LONG_RUN, roundTo500m(weeklyMeters * 0.60), targets.longRunPaceRange.first, targets.longRunPaceRange.second, "Z2 (118-140 bpm)")
+                item(DayOfWeek.TUESDAY, qualityType, 0.40, qualityPaces, qualityHr),
+                item(DayOfWeek.SATURDAY, WorkoutType.LONG_RUN, 0.60, targets.longRunPaceRange, aerobicHr)
             )
             4 -> listOf(
-                PlanDayItem(DayOfWeek.TUESDAY, WorkoutType.EASY, roundTo500m(weeklyMeters * 0.22), targets.easyPaceRange.first, targets.easyPaceRange.second, "Z2 (118-140 bpm)"),
-                PlanDayItem(DayOfWeek.THURSDAY, qualityType, roundTo500m(weeklyMeters * 0.25), qualityPaces.first, qualityPaces.second, qualityHr),
-                PlanDayItem(DayOfWeek.SATURDAY, WorkoutType.EASY, roundTo500m(weeklyMeters * 0.18), targets.easyPaceRange.first, targets.easyPaceRange.second, "Z1-Z2 (<140 bpm)"),
-                PlanDayItem(DayOfWeek.SUNDAY, WorkoutType.LONG_RUN, roundTo500m(weeklyMeters * 0.35), targets.longRunPaceRange.first, targets.longRunPaceRange.second, "Z2 (118-140 bpm)")
+                item(DayOfWeek.TUESDAY, WorkoutType.EASY, 0.22, targets.easyPaceRange, aerobicHr),
+                item(DayOfWeek.THURSDAY, qualityType, 0.25, qualityPaces, qualityHr),
+                item(DayOfWeek.SATURDAY, WorkoutType.EASY, 0.18, targets.easyPaceRange, recoveryHr),
+                item(DayOfWeek.SUNDAY, WorkoutType.LONG_RUN, 0.35, targets.longRunPaceRange, aerobicHr)
             )
             else -> listOf(
-                PlanDayItem(DayOfWeek.TUESDAY, WorkoutType.EASY, roundTo500m(weeklyMeters * 0.30), targets.easyPaceRange.first, targets.easyPaceRange.second, "Z2 (118-140 bpm)"),
-                PlanDayItem(DayOfWeek.THURSDAY, qualityType, roundTo500m(weeklyMeters * 0.25), qualityPaces.first, qualityPaces.second, qualityHr),
-                PlanDayItem(DayOfWeek.SATURDAY, WorkoutType.LONG_RUN, roundTo500m(weeklyMeters * 0.45), targets.longRunPaceRange.first, targets.longRunPaceRange.second, "Z2 (118-140 bpm)")
+                item(DayOfWeek.TUESDAY, WorkoutType.EASY, 0.30, targets.easyPaceRange, aerobicHr),
+                item(DayOfWeek.THURSDAY, qualityType, 0.25, qualityPaces, qualityHr),
+                item(DayOfWeek.SATURDAY, WorkoutType.LONG_RUN, 0.45, targets.longRunPaceRange, aerobicHr)
             )
         }
     }

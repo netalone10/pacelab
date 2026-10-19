@@ -109,28 +109,7 @@ class MainActivity : ComponentActivity() {
                     onNextWeek = { viewModel.selectWeekOffset(1) },
                     onSync = { viewModel.syncFromHealthConnect() },
                     onRequestPermissions = {
-                        val permissions = setOf(
-                            androidx.health.connect.client.permission.HealthPermission.getReadPermission(
-                                androidx.health.connect.client.records.ExerciseSessionRecord::class
-                            ),
-                            androidx.health.connect.client.permission.HealthPermission.getReadPermission(
-                                androidx.health.connect.client.records.DistanceRecord::class
-                            ),
-                            androidx.health.connect.client.permission.HealthPermission.getReadPermission(
-                                androidx.health.connect.client.records.HeartRateRecord::class
-                            ),
-                            androidx.health.connect.client.permission.HealthPermission.getReadPermission(
-                                androidx.health.connect.client.records.SpeedRecord::class
-                            ),
-                            androidx.health.connect.client.permission.HealthPermission.getReadPermission(
-                                androidx.health.connect.client.records.TotalCaloriesBurnedRecord::class
-                            ),
-                            androidx.health.connect.client.permission.HealthPermission.getReadPermission(
-                                androidx.health.connect.client.records.ElevationGainedRecord::class
-                            ),
-                            "android.permission.health.READ_HEALTH_DATA_HISTORY"
-                        )
-                        permissionsLauncher.launch(permissions)
+                        permissionsLauncher.launch(viewModel.requiredPermissions)
                     },
                     onOpenPlayStore = onOpenPlayStore,
                     onLoadDemoData = { viewModel.loadDemoData() },
@@ -343,6 +322,8 @@ fun PaceLabApp(
                 4 -> SettingsAndPrivacyScreen(
                     userSettings = uiState.userSettings,
                     hasHealthPermissions = uiState.hasHealthPermissions,
+                    hasAllHealthPermissions = uiState.hasAllHealthPermissions,
+                    syncError = uiState.syncError,
                     onRequestPermissions = onRequestPermissions,
                     onOpenPlayStore = onOpenPlayStore,
                     onLoadDemoData = onLoadDemoData,

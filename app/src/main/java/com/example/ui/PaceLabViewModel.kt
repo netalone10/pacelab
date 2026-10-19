@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.health.HealthConnectStatus
+import com.example.data.health.HealthPermissions
 import com.example.data.local.PlanStateEntity
 import com.example.data.model.HeartRatePoint
 import com.example.data.model.RaceDistance
@@ -12,6 +13,7 @@ import com.example.data.model.RunSession
 import com.example.data.model.RunSplit
 import com.example.data.model.UserSettings
 import com.example.data.model.WeeklySummary
+import com.example.data.repository.HealthPermissionMissingException
 import com.example.data.repository.PaceLabRepository
 import com.example.util.HrZones
 import com.example.util.PeriodizedPlanWeek
@@ -25,6 +27,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.math.pow
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.ZoneId
@@ -47,6 +50,8 @@ data class PaceLabUiState(
     val selectedPlanWeekIndex: Int = 1,
     val healthConnectStatus: HealthConnectStatus = HealthConnectStatus.Available,
     val hasHealthPermissions: Boolean = false,
+    val hasAllHealthPermissions: Boolean = false,
+    val syncError: String? = null,
     val isUsingDemo: Boolean = false,
     val isSyncing: Boolean = false,
     val showPrivacyPolicy: Boolean = false,
@@ -56,6 +61,9 @@ data class PaceLabUiState(
 class PaceLabViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository = PaceLabRepository(application.applicationContext)
+
+    /** Permissions to request from Health Connect. */
+    val requiredPermissions: Set<String> = repository.healthRepo.requiredPermissions
 
     private val _uiState = MutableStateFlow(PaceLabUiState())
     val uiState: StateFlow<PaceLabUiState> = _uiState.asStateFlow()
@@ -76,8 +84,12 @@ class PaceLabViewModel(application: Application) : AndroidViewModel(application)
             ) { sessions, settings, planStates, targetRace ->
                 Tuple4(sessions, settings, planStates, targetRace)
             }.collect { (sessions, settings, planStates, targetRace) ->
-                val currentMonday = _uiState.value.currentWeekMonday
-                val weeklySummary = repository.computeWeeklySummary(sessions, currentMonday, settings)
+                // The summary follows the week the user is browsing, but the plan is always
+                // anchored to the real current week so browsing never shifts the schedule.
+                val viewedMonday = _uiState.value.currentWeekMonday
+                val planMonday = LocalDate.now().with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+                val weeklySummary = repository.computeWeeklySummary(sessions, viewedMonday, settings)
+                val activeSessions = sessions.filter { !it.isDuplicate }
 
                 val goalDistance = targetRace?.distance?.meters ?: settings.targetRaceDistance.meters
 
@@ -100,7 +112,11 @@ class PaceLabViewModel(application: Application) : AndroidViewModel(application)
                     maxHr = settings.maxHr
                 )
 
-                val baseVolume = (weeklySummary.totalDistanceMeters / 1000.0).coerceIn(16.0, 35.0)
+                val baseVolume = PeriodizedPlanner.baseWeeklyVolumeKm(
+                    sessions = activeSessions,
+                    planMonday = planMonday,
+                    daysPerWeek = settings.trainingDaysPerWeek
+                )
 
                 val generatedWeeks = PeriodizedPlanner.generatePeriodizedPlan(
                     raceEvent = targetRace,
@@ -108,19 +124,18 @@ class PaceLabViewModel(application: Application) : AndroidViewModel(application)
                     daysPerWeek = settings.trainingDaysPerWeek,
                     targets = targets,
                     zones = zones,
-                    currentMonday = currentMonday
+                    currentMonday = planMonday
                 )
 
                 // Match with actual sessions & Room plan states
                 val zone = ZoneId.systemDefault()
-                val realSessionPairs = sessions.map { session ->
+                val realSessionPairs = activeSessions.map { session ->
                     val date = session.startTime.atZone(zone).toLocalDate()
                     Pair(date, Pair(session.distanceMeters, session.avgPaceSeconds))
                 }
 
                 val matchedWeeks = generatedWeeks.map { week ->
-                    val weekStart = currentMonday.plusWeeks((week.weekIndex - 1).toLong())
-                    val matchedDays = PlanGenerator.matchRealSessions(week.days, weekStart, realSessionPairs)
+                    val matchedDays = PlanGenerator.matchRealSessions(week.days, week.weekStartMonday, realSessionPairs)
                     val finalizedDays = matchedDays.map { day ->
                         val key = "w${week.weekIndex}_${day.dayOfWeek.name}"
                         val storedState = planStates[key]
@@ -154,11 +169,12 @@ class PaceLabViewModel(application: Application) : AndroidViewModel(application)
     fun refreshHealthStatus() {
         viewModelScope.launch {
             val status = repository.getSdkStatus()
-            val hasPerms = repository.hasHealthPermissions()
+            val granted = repository.getGrantedPermissions()
             _uiState.update {
                 it.copy(
                     healthConnectStatus = status,
-                    hasHealthPermissions = hasPerms
+                    hasHealthPermissions = granted.containsAll(HealthPermissions.core),
+                    hasAllHealthPermissions = granted.containsAll(HealthPermissions.all)
                 )
             }
         }
@@ -166,18 +182,28 @@ class PaceLabViewModel(application: Application) : AndroidViewModel(application)
 
     private fun triggerInitialSync() {
         viewModelScope.launch {
-            _uiState.update { it.copy(isSyncing = true) }
-            repository.syncData(forceSeedDemo = false)
-            _uiState.update { it.copy(isSyncing = false) }
+            runSync()
         }
     }
 
     fun syncFromHealthConnect() {
         viewModelScope.launch {
-            _uiState.update { it.copy(isSyncing = true) }
-            repository.syncData(forceSeedDemo = false)
+            runSync()
             refreshHealthStatus()
-            _uiState.update { it.copy(isSyncing = false) }
+        }
+    }
+
+    private suspend fun runSync() {
+        _uiState.update { it.copy(isSyncing = true, syncError = null) }
+        val result = repository.syncData()
+        val error = result.exceptionOrNull()
+        _uiState.update {
+            it.copy(
+                isSyncing = false,
+                // A missing permission is shown by the status text, not as an error.
+                syncError = if (error == null || error is HealthPermissionMissingException) null
+                else (error.message ?: "Sync gagal")
+            )
         }
     }
 
@@ -222,11 +248,11 @@ class PaceLabViewModel(application: Application) : AndroidViewModel(application)
 
         _uiState.update { it.copy(selectedSession = session, isLoadingSessionDetail = true) }
         viewModelScope.launch {
-            val (splits, hrPoints) = repository.getSessionDetails(session)
+            val details = repository.getSessionDetails(session)
             _uiState.update {
                 it.copy(
-                    selectedSessionSplits = splits,
-                    selectedSessionHrPoints = hrPoints,
+                    selectedSessionSplits = details.splits,
+                    selectedSessionHrPoints = details.hrPoints,
                     isLoadingSessionDetail = false
                 )
             }
@@ -309,21 +335,26 @@ class PaceLabViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    /**
+     * Picks the recent run that predicts the fastest 10K by Riegel. Only real, non duplicate runs
+     * of at least 4.8 km from the last 12 weeks count, so a short fast jog cannot skew the targets.
+     */
     fun useBestRecentRunAsReference() {
-        val sessions = _uiState.value.allSessions
-        if (sessions.isEmpty()) return
+        val state = _uiState.value
+        val cutoff = java.time.Instant.now().minus(java.time.Duration.ofDays(84))
+        val usable = state.allSessions.filter { !it.isDuplicate }
+        val pool = if (usable.any { !it.isSeed }) usable.filter { !it.isSeed } else usable
 
-        val bestRun = sessions
-            .filter { it.distanceMeters >= 3000.0 }
-            .minByOrNull { it.avgPaceSeconds } ?: sessions.firstOrNull()
+        val best = pool
+            .filter { it.distanceMeters >= 4800.0 && it.durationSeconds > 0 && it.startTime.isAfter(cutoff) }
+            .minByOrNull { it.durationSeconds * (10000.0 / it.distanceMeters).pow(1.06) }
+            ?: return
 
-        bestRun?.let { run ->
-            updateReferenceRace(
-                distanceMeters = run.distanceMeters,
-                durationSeconds = run.durationSeconds,
-                avgHeartRate = run.avgHeartRate ?: 151
-            )
-        }
+        updateReferenceRace(
+            distanceMeters = best.distanceMeters,
+            durationSeconds = best.durationSeconds,
+            avgHeartRate = best.avgHeartRate ?: state.userSettings.refAvgHeartRate
+        )
     }
 
     fun updateTargetRaceDistance(distance: RaceDistance) {
@@ -341,6 +372,8 @@ class PaceLabViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun updateHrZones(z1Max: Int, z2Max: Int, z3Max: Int, z4Max: Int, maxHr: Int) {
+        // Ignore half-typed or inconsistent thresholds instead of saving broken zones.
+        if (!(z1Max > 0 && z1Max < z2Max && z2Max < z3Max && z3Max < z4Max && z4Max < maxHr)) return
         viewModelScope.launch {
             val updated = _uiState.value.userSettings.copy(
                 z1Max = z1Max,

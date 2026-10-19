@@ -161,6 +161,16 @@ fun PaceSplitsTable(
                 color = TextWhite
             )
 
+            if (splits.isEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Split data unavailable. The tracker did not write enough distance records for this run.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary
+                )
+                return@Column
+            }
+
             Spacer(modifier = Modifier.height(12.dp))
 
             // Header Row
