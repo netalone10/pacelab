@@ -39,7 +39,16 @@ jobs:
         continue-on-error: true
 
       - name: Build debug APK
-        run: gradle :app:assembleDebug
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle :app:assembleDebug --console=plain --stacktrace 2>&1 | tee build.log
+
+      - name: Surface build errors as annotations
+        if: failure()
+        run: |
+          msg=$(grep -E "^e: |What went wrong|Execution failed|Caused by|error:|AAPT|Could not" -A3 build.log | head -40 | cut -c1-300 | sed ':a;N;$!ba;s/\n/%0A/g')
+          echo "::error title=Gradle build failure::${msg}"
 
       - uses: actions/upload-artifact@v4
         with:
