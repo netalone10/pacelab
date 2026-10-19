@@ -74,6 +74,7 @@ fun PlanScreen(
     onToggleDayDone: (weekIndex: Int, dayOfWeek: DayOfWeek, isDone: Boolean) -> Unit,
     onOpenRaceSetup: () -> Unit,
     onDeleteRace: () -> Unit,
+    planNote: String? = null,
     modifier: Modifier = Modifier
 ) {
     val currentWeek = planWeeks.find { it.weekIndex == selectedWeekIndex } ?: planWeeks.firstOrNull()
@@ -85,6 +86,32 @@ fun PlanScreen(
             .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        if (planNote != null) {
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, Zone3Amber, RoundedCornerShape(12.dp)),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = AthleticDarkCard)
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text = "PLAN DISESUAIKAN",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Zone3Amber,
+                            letterSpacing = 1.sp
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = planNote,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextWhite
+                        )
+                    }
+                }
+            }
+        }
         item {
             Spacer(modifier = Modifier.height(4.dp))
             Row(

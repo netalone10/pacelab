@@ -104,6 +104,58 @@ object PeriodizedPlanner {
         return (totalKm / weeks).coerceAtLeast(5.0)
     }
 
+    /** Starting volume plus a human readable reason when it was adjusted. */
+    data class VolumeAdvice(val baseKm: Double, val note: String?)
+
+    /**
+     * Adapts the starting volume to what actually happened recently:
+     * - no run in the last 14 days: restart at 60% of the recent average
+     * - last full week far below average (under 50%): come back at 75%
+     * - last full week far above average (over 125%): hold at the average, no extra progression
+     * Otherwise the plain recent average is used.
+     */
+    fun adaptiveBaseVolume(
+        sessions: List<RunSession>,
+        planMonday: LocalDate,
+        daysPerWeek: Int,
+        today: LocalDate = LocalDate.now(),
+        zone: ZoneId = ZoneId.systemDefault()
+    ): VolumeAdvice {
+        val avg = baseWeeklyVolumeKm(sessions, planMonday, daysPerWeek, zone)
+        if (sessions.isEmpty()) return VolumeAdvice(avg, null)
+
+        val dates = sessions.map { it.startTime.atZone(zone).toLocalDate() }
+        val lastRun = dates.max()
+        val daysSinceLast = ChronoUnit.DAYS.between(lastRun, today)
+        if (daysSinceLast >= 14) {
+            return VolumeAdvice(
+                (avg * 0.60).coerceAtLeast(5.0),
+                "Sudah $daysSinceLast hari tanpa lari. Volume mulai dari 60% rata-rata terakhir."
+            )
+        }
+
+        val lastWeekStart = planMonday.minusWeeks(1)
+        val lastWeekKm = sessions
+            .filter {
+                val d = it.startTime.atZone(zone).toLocalDate()
+                !d.isBefore(lastWeekStart) && d.isBefore(planMonday)
+            }
+            .sumOf { it.distanceMeters } / 1000.0
+        val hasHistory = dates.any { it.isBefore(lastWeekStart) }
+
+        return when {
+            hasHistory && lastWeekKm < avg * 0.5 -> VolumeAdvice(
+                (avg * 0.75).coerceAtLeast(5.0),
+                "Minggu lalu cuma %.1f km (rata-rata %.1f km). Volume diturunkan 25% biar masuk lagi pelan.".format(lastWeekKm, avg)
+            )
+            hasHistory && lastWeekKm > avg * 1.25 -> VolumeAdvice(
+                avg,
+                "Minggu lalu %.1f km, lonjakan di atas rata-rata %.1f km. Volume ditahan, tidak naik dulu.".format(lastWeekKm, avg)
+            )
+            else -> VolumeAdvice(avg, null)
+        }
+    }
+
     /**
      * Generates a periodized plan leading up to the target race date.
      *

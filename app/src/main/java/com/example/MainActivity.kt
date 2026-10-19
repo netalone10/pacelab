@@ -124,7 +124,8 @@ class MainActivity : ComponentActivity() {
                     onTogglePlanDayDone = { w, d, done -> viewModel.togglePlanDayDone(w, d, done) },
                     onOpenRaceSetup = { viewModel.setRaceSetupDialogVisible(true) },
                     onDeleteRace = { viewModel.deleteTargetRace() },
-                    onUpdateHrZones = { z1, z2, z3, z4, max -> viewModel.updateHrZones(z1, z2, z3, z4, max) }
+                    onUpdateHrZones = { z1, z2, z3, z4, max -> viewModel.updateHrZones(z1, z2, z3, z4, max) },
+                    onToggleAutoSync = { viewModel.setAutoSync(it) }
                 )
 
                 // Race Setup & Customization Dialog
@@ -164,7 +165,8 @@ fun PaceLabApp(
     onTogglePlanDayDone: (Int, DayOfWeek, Boolean) -> Unit,
     onOpenRaceSetup: () -> Unit,
     onDeleteRace: () -> Unit,
-    onUpdateHrZones: (Int, Int, Int, Int, Int) -> Unit
+    onUpdateHrZones: (Int, Int, Int, Int, Int) -> Unit,
+    onToggleAutoSync: (Boolean) -> Unit
 ) {
     Scaffold(
         containerColor = AthleticDarkBg,
@@ -306,7 +308,10 @@ fun PaceLabApp(
                     targets = uiState.targets,
                     onUpdateTargetRace = onUpdateTargetRace,
                     onUpdateReferenceRace = onUpdateReferenceRace,
-                    onUseBestRun = onUseBestRun
+                    onUseBestRun = onUseBestRun,
+                    predictionTrend = uiState.predictionTrend,
+                    suggestedRun = uiState.suggestedReferenceRun,
+                    goalLabel = (uiState.targetRace?.distance ?: uiState.userSettings.targetRaceDistance).label
                 )
                 3 -> PlanScreen(
                     userSettings = uiState.userSettings,
@@ -317,13 +322,18 @@ fun PaceLabApp(
                     onUpdateTrainingDays = onUpdateTrainingDays,
                     onToggleDayDone = onTogglePlanDayDone,
                     onOpenRaceSetup = onOpenRaceSetup,
-                    onDeleteRace = onDeleteRace
+                    onDeleteRace = onDeleteRace,
+                    planNote = uiState.planNote
                 )
                 4 -> SettingsAndPrivacyScreen(
                     userSettings = uiState.userSettings,
                     hasHealthPermissions = uiState.hasHealthPermissions,
                     hasAllHealthPermissions = uiState.hasAllHealthPermissions,
                     syncError = uiState.syncError,
+                    autoSyncEnabled = uiState.autoSyncEnabled,
+                    hasBackgroundPermission = uiState.hasBackgroundPermission,
+                    lastSyncEpochMs = uiState.lastSyncEpochMs,
+                    onToggleAutoSync = onToggleAutoSync,
                     onRequestPermissions = onRequestPermissions,
                     onOpenPlayStore = onOpenPlayStore,
                     onLoadDemoData = onLoadDemoData,

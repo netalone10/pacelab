@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.RaceDistance
 import com.example.data.model.UserSettings
+import com.example.data.model.RunSession
 import com.example.ui.theme.AthleticBorder
 import com.example.ui.theme.AthleticDarkCard
 import com.example.ui.theme.TextSecondary
@@ -56,6 +57,7 @@ import com.example.ui.theme.Zone1Blue
 import com.example.ui.theme.Zone2Green
 import com.example.ui.theme.Zone3Amber
 import com.example.ui.theme.Zone4Orange
+import com.example.util.PredictionPoint
 import com.example.util.PaceUtils
 import com.example.util.PredictedTargets
 import java.util.Locale
@@ -67,6 +69,9 @@ fun TargetsScreen(
     onUpdateTargetRace: (RaceDistance) -> Unit,
     onUpdateReferenceRace: (distanceMeters: Double, durationSeconds: Long, avgHr: Int) -> Unit,
     onUseBestRun: () -> Unit,
+    predictionTrend: List<PredictionPoint> = emptyList(),
+    suggestedRun: RunSession? = null,
+    goalLabel: String = "10K",
     modifier: Modifier = Modifier
 ) {
     var refDistanceText by remember(userSettings.refDistanceMeters) {
@@ -85,6 +90,105 @@ fun TargetsScreen(
             .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        if (suggestedRun != null) {
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, VoltPrimary, RoundedCornerShape(12.dp)),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = AthleticDarkCard)
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text = "LARI TERBARU LEBIH KENCANG",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = VoltPrimary,
+                            letterSpacing = 1.sp
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = String.format(
+                                Locale.US,
+                                "%.2f km dalam %s memprediksi %s lebih cepat dari referensi sekarang. Pakai sebagai referensi?",
+                                suggestedRun.distanceMeters / 1000.0,
+                                PaceUtils.formatDuration(suggestedRun.durationSeconds),
+                                goalLabel
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextWhite
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(
+                            onClick = onUseBestRun,
+                            colors = ButtonDefaults.buttonColors(containerColor = VoltPrimary, contentColor = VoltOnPrimary)
+                        ) {
+                            Text("Pakai lari ini")
+                        }
+                    }
+                }
+            }
+        }
+        if (predictionTrend.size >= 2) {
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, AthleticBorder, RoundedCornerShape(16.dp)),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = AthleticDarkCard)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "TREN PREDIKSI $goalLabel",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextSecondary,
+                            letterSpacing = 1.sp
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        val first = predictionTrend.first().predictedSeconds
+                        val last = predictionTrend.last().predictedSeconds
+                        val delta = last - first
+                        val deltaText = when {
+                            delta < 0 -> "${PaceUtils.formatDuration(-delta)} lebih cepat dari awal"
+                            delta > 0 -> "${PaceUtils.formatDuration(delta)} lebih lambat dari awal"
+                            else -> "sama dengan awal"
+                        }
+                        Text(
+                            text = deltaText,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = if (delta <= 0) VoltPrimary else TextWhite,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Prediksi terbaik dalam jendela 28 hari, dari lari asli.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        predictionTrend.takeLast(8).reversed().forEach { point ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Minggu ${point.weekMonday}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary
+                                )
+                                Text(
+                                    text = PaceUtils.formatDuration(point.predictedSeconds),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextWhite
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
         item {
             Spacer(modifier = Modifier.height(4.dp))
             Text(
