@@ -1,0 +1,6 @@
+{
+  "summary": "Updated implementation plan incorporating an interactive Heart Rate Timeline Scrubber (vertical cursor line, touch scrub, exact BPM readout, timestamp, and zone pill), alongside the Race Calendar with 1-week sharp taper and Workout Deduplication manager.",
+  "updatedAt": "2026-10-19T06:12:29.051684597Z",
+  "requestFeedback": true,
+  "userFacing": true
+}

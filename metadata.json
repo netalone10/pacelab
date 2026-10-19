@@ -1,0 +1,6 @@
+{
+  "name": "PaceLab",
+  "description": "Personal running analytics, weekly workload, and adaptive 10K target pace calculator powered by Health Connect.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
