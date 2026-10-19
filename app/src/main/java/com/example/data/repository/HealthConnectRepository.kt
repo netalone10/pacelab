@@ -3,6 +3,7 @@ package com.example.data.repository
 import android.content.Context
 import android.util.Log
 import androidx.health.connect.client.HealthConnectClient
+import androidx.health.connect.client.aggregate.AggregateMetric
 import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.ElevationGainedRecord
 import androidx.health.connect.client.records.ExerciseSessionRecord
@@ -214,7 +215,7 @@ class HealthConnectRepositoryImpl(
         val durationSec = Duration.between(record.startTime, record.endTime).seconds.coerceAtLeast(1L)
         val range = TimeRangeFilter.between(record.startTime, record.endTime)
 
-        val metrics = mutableSetOf(DistanceRecord.DISTANCE_TOTAL)
+        val metrics = mutableSetOf<AggregateMetric<Any>>(DistanceRecord.DISTANCE_TOTAL)
         if (HealthPermissions.calories in granted) metrics.add(TotalCaloriesBurnedRecord.ENERGY_TOTAL)
         if (HealthPermissions.elevation in granted) metrics.add(ElevationGainedRecord.ELEVATION_GAINED_TOTAL)
         val hasHr = HealthPermissions.heartRate in granted
