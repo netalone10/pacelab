@@ -27,6 +27,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -57,6 +59,10 @@ fun SettingsAndPrivacyScreen(
     hasHealthPermissions: Boolean,
     hasAllHealthPermissions: Boolean,
     syncError: String?,
+    autoSyncEnabled: Boolean,
+    hasBackgroundPermission: Boolean,
+    lastSyncEpochMs: Long,
+    onToggleAutoSync: (Boolean) -> Unit,
     onRequestPermissions: () -> Unit,
     onOpenPlayStore: () -> Unit,
     onLoadDemoData: () -> Unit,
@@ -306,6 +312,69 @@ fun SettingsAndPrivacyScreen(
                                 Text("Seed Demo Data")
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        // Automatic background sync
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, AthleticBorder, RoundedCornerShape(16.dp)),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = AthleticDarkCard)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "AUTO SYNC",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextSecondary,
+                                letterSpacing = 1.sp
+                            )
+                            Text(
+                                text = "Tarik lari baru tiap 6 jam",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = TextWhite,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Switch(
+                            checked = autoSyncEnabled,
+                            onCheckedChange = onToggleAutoSync,
+                            colors = SwitchDefaults.colors(checkedTrackColor = VoltPrimary),
+                            modifier = Modifier.testTag("settings_auto_sync_switch")
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    val lastText = if (lastSyncEpochMs > 0L) {
+                        "Sync terakhir: " + java.text.SimpleDateFormat("d MMM yyyy HH:mm", java.util.Locale.getDefault())
+                            .format(java.util.Date(lastSyncEpochMs))
+                    } else {
+                        "Belum pernah sync."
+                    }
+                    Text(
+                        text = lastText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+
+                    if (autoSyncEnabled && !hasBackgroundPermission) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Izin baca di background belum diberikan. Tanpa itu, sync otomatis cuma jalan kalau Android mengizinkan. Tap Manage Permissions dan izinkan. Di versi Health Connect lama, izin ini mungkin tidak tersedia.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
                     }
                 }
             }

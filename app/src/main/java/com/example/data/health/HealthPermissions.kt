@@ -20,6 +20,7 @@ sealed class HealthConnectStatus {
  */
 object HealthPermissions {
     const val HISTORY = "android.permission.health.READ_HEALTH_DATA_HISTORY"
+    const val BACKGROUND = "android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND"
 
     val exercise = HealthPermission.getReadPermission(ExerciseSessionRecord::class)
     val distance = HealthPermission.getReadPermission(DistanceRecord::class)
@@ -31,4 +32,10 @@ object HealthPermissions {
     val core: Set<String> = setOf(exercise, distance)
 
     val all: Set<String> = core + setOf(heartRate, speed, calories, elevation, HISTORY)
+
+    /**
+     * What the permission dialog asks for. Background reading is optional (older Health Connect
+     * versions cannot grant it), so it is requested but not part of [all].
+     */
+    val requestable: Set<String> = all + BACKGROUND
 }

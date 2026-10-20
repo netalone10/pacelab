@@ -61,7 +61,7 @@ class HealthConnectRepositoryImpl(
 
     private val tag = "HealthConnectRepo"
 
-    override val requiredPermissions: Set<String> = HealthPermissions.all
+    override val requiredPermissions: Set<String> = HealthPermissions.requestable
 
     private fun getClient(): HealthConnectClient? {
         return try {
