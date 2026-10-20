@@ -27,6 +27,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -48,12 +50,19 @@ import com.example.ui.theme.TextTertiary
 import com.example.ui.theme.TextWhite
 import com.example.ui.theme.VoltOnPrimary
 import com.example.ui.theme.VoltPrimary
+import com.example.BuildConfig
 import com.example.util.HrZoneCalculator
 
 @Composable
 fun SettingsAndPrivacyScreen(
     userSettings: UserSettings,
     hasHealthPermissions: Boolean,
+    hasAllHealthPermissions: Boolean,
+    syncError: String?,
+    autoSyncEnabled: Boolean,
+    hasBackgroundPermission: Boolean,
+    lastSyncEpochMs: Long,
+    onToggleAutoSync: (Boolean) -> Unit,
     onRequestPermissions: () -> Unit,
     onOpenPlayStore: () -> Unit,
     onLoadDemoData: () -> Unit,
@@ -259,14 +268,26 @@ fun SettingsAndPrivacyScreen(
                     Spacer(modifier = Modifier.height(8.dp))
 
                     Text(
-                        text = if (hasHealthPermissions) {
-                            "Status: Connected and authorized. Read-only running sessions and metrics are active."
-                        } else {
-                            "Status: Permissions not yet granted or Health Connect not configured."
+                        text = when {
+                            hasHealthPermissions && hasAllHealthPermissions ->
+                                "Status: Connected. All read permissions granted (heart rate, calories, elevation, history)."
+                            hasHealthPermissions ->
+                                "Status: Connected with limited access. Runs sync, but some data (heart rate, calories, elevation or history older than 30 days) is not permitted. Tap Manage Permissions to allow it."
+                            else ->
+                                "Status: Permissions not yet granted or Health Connect not configured."
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = if (hasHealthPermissions) StatusSuccess else TextWhite
                     )
+
+                    if (syncError != null) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Sync error: $syncError",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
 
                     Spacer(modifier = Modifier.height(12.dp))
 
@@ -282,13 +303,78 @@ fun SettingsAndPrivacyScreen(
                             Text("Manage Permissions")
                         }
 
-                        OutlinedButton(
-                            onClick = onLoadDemoData,
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = VoltPrimary),
-                            modifier = Modifier.weight(1f).testTag("settings_reload_demo_button")
-                        ) {
-                            Text("Seed Demo Data")
+                        if (BuildConfig.DEBUG) {
+                            OutlinedButton(
+                                onClick = onLoadDemoData,
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = VoltPrimary),
+                                modifier = Modifier.weight(1f).testTag("settings_reload_demo_button")
+                            ) {
+                                Text("Seed Demo Data")
+                            }
                         }
+                    }
+                }
+            }
+        }
+
+        // Automatic background sync
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, AthleticBorder, RoundedCornerShape(16.dp)),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = AthleticDarkCard)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "AUTO SYNC",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextSecondary,
+                                letterSpacing = 1.sp
+                            )
+                            Text(
+                                text = "Tarik lari baru tiap 6 jam",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = TextWhite,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Switch(
+                            checked = autoSyncEnabled,
+                            onCheckedChange = onToggleAutoSync,
+                            colors = SwitchDefaults.colors(checkedTrackColor = VoltPrimary),
+                            modifier = Modifier.testTag("settings_auto_sync_switch")
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    val lastText = if (lastSyncEpochMs > 0L) {
+                        "Sync terakhir: " + java.text.SimpleDateFormat("d MMM yyyy HH:mm", java.util.Locale.getDefault())
+                            .format(java.util.Date(lastSyncEpochMs))
+                    } else {
+                        "Belum pernah sync."
+                    }
+                    Text(
+                        text = lastText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+
+                    if (autoSyncEnabled && !hasBackgroundPermission) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Izin baca di background belum diberikan. Tanpa itu, sync otomatis cuma jalan kalau Android mengizinkan. Tap Manage Permissions dan izinkan. Di versi Health Connect lama, izin ini mungkin tidak tersedia.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
                     }
                 }
             }
@@ -329,7 +415,8 @@ fun SettingsAndPrivacyScreen(
                     Text(
                         text = "• PaceLab accesses Health Connect strictly in READ-ONLY mode for exercise sessions (running), distance, speed, heart rate, elevation, and calories.\n" +
                                 "• Zero External Transmissions: All pace predictions, split calculations, and weekly workload charts run locally on your device. PaceLab has NO backend server, NO advertising SDKs, and NO cloud telemetry.\n" +
-                                "• Full Historical Access (READ_HEALTH_DATA_HISTORY): Retrieves your entire recorded running history from the beginning of time without 30-day restrictions, allowing long-term progress tracking and accurate race pace predictions.\n" +
+                                "• Historical Access (READ_HEALTH_DATA_HISTORY): Optional. If you allow it, PaceLab can read runs older than 30 days for long-term trends. Without it, only the recent window Health Connect exposes is available.\n" +
+                                "• Runs are cached in a local database on this device. Android backup is disabled for this app, so this data is not copied to cloud backup.\n" +
                                 "• You can revoke permission at any time in Android Settings > Health Connect.",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary,

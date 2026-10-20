@@ -1,0 +1,56 @@
+name: Android debug build
+
+on:
+  push:
+    branches: [main, master, "fix/**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # The runner image already ships the Android SDK; setup-android's sdkmanager call failed.
+      # Only accept licenses so AGP can auto-download the platform it needs (compileSdk 36.1).
+      - name: Accept Android SDK licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+      # debug.keystore is gitignored but referenced by app/build.gradle.kts, so generate one.
+      - name: Generate debug keystore
+        run: |
+          keytool -genkeypair -v -keystore debug.keystore \
+            -storepass android -alias androiddebugkey -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+      - name: Unit tests
+        run: gradle :app:testDebugUnitTest
+        continue-on-error: true
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle :app:assembleDebug --console=plain --stacktrace 2>&1 | tee build.log
+
+      - name: Surface build errors as annotations
+        if: failure()
+        run: |
+          msg=$(grep -E "^e: |What went wrong|Execution failed|Caused by|error:|AAPT|Could not" -A3 build.log | head -40 | cut -c1-300 | sed ':a;N;$!ba;s/\n/%0A/g')
+          echo "::error title=Gradle build failure::${msg}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pacelab-debug-apk
+          path: app/build/outputs/apk/debug/*.apk

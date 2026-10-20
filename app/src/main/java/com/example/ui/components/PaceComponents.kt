@@ -1,5 +1,8 @@
 package com.example.ui.components
 
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -15,9 +18,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -34,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -160,6 +167,103 @@ fun PaceSplitsTable(
                 style = MaterialTheme.typography.titleMedium,
                 color = TextWhite
             )
+
+            if (splits.isEmpty()) {
+                val context = LocalContext.current
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(StatusWarning.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
+                        .border(1.dp, StatusWarning.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+                        .padding(14.dp)
+                ) {
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Info,
+                                contentDescription = null,
+                                tint = StatusWarning,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Split Data Unavailable",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = TextWhite,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Text(
+                            text = "To generate per-kilometer splits, your fitness tracker (e.g. Samsung Health, Google Fit, Garmin) must write interval Distance records into Health Connect.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                            lineHeight = 18.sp
+                        )
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        Text(
+                            text = "Samsung Health Sync Checklist:",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = VoltPrimary,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            SyncCheckItem("1. Open Samsung Health ➔ Settings ➔ Health Connect (Connected Services).")
+                            SyncCheckItem("2. Ensure Distance, Exercise, and Heart Rate permissions are turned ON.")
+                            SyncCheckItem("3. Ensure workouts are tracked outdoors with GPS active so intermediate distance points are logged.")
+                            SyncCheckItem("4. Verify PaceLab has read access to Distance and Exercise in Health Connect.")
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Button(
+                            onClick = {
+                                try {
+                                    val hcIntent = Intent("androidx.health.ACTION_HEALTH_CONNECT_SETTINGS")
+                                    context.startActivity(hcIntent)
+                                } catch (_: Exception) {
+                                    try {
+                                        val settingsIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                            data = Uri.fromParts("package", context.packageName, null)
+                                        }
+                                        context.startActivity(settingsIntent)
+                                    } catch (_: Exception) {}
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = VoltPrimary,
+                                contentColor = AthleticDarkCard
+                            ),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("open_health_connect_settings_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Open Health Connect Settings",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                }
+                return@Column
+            }
 
             Spacer(modifier = Modifier.height(12.dp))
 
@@ -322,3 +426,22 @@ fun HealthStatusBanner(
         }
     }
 }
+
+@Composable
+private fun SyncCheckItem(text: String) {
+    Row(verticalAlignment = Alignment.Top) {
+        Text(
+            text = "• ",
+            color = StatusWarning,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            text = text,
+            color = TextSecondary,
+            fontSize = 12.sp,
+            lineHeight = 16.sp
+        )
+    }
+}
+

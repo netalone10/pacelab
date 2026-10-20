@@ -10,6 +10,8 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "cached_sessions")
@@ -24,7 +26,18 @@ data class CachedSessionEntity(
     val maxHeartRate: Int?,
     val totalCalories: Double?,
     val elevationGainedMeters: Double?,
-    val isSeed: Boolean
+    val isSeed: Boolean,
+    // Encoded bpm -> seconds histogram. NULL = not processed yet, "" = processed, no HR data.
+    val hrHistogram: String? = null
+)
+
+/**
+ * Sessions the user deleted. Health Connect still holds them, so without this list every sync
+ * would bring a deleted run (or a resolved duplicate) straight back.
+ */
+@Entity(tableName = "ignored_sessions")
+data class IgnoredSessionEntity(
+    @PrimaryKey val id: String
 )
 
 @Entity(tableName = "plan_states")
@@ -78,6 +91,16 @@ interface PaceLabDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertSessions(sessions: List<CachedSessionEntity>)
 
+    /** Real (non demo) sessions that already have their heart rate histogram stored. */
+    @Query("SELECT id FROM cached_sessions WHERE isSeed = 0 AND hrHistogram IS NOT NULL")
+    suspend fun getSyncedSessionIds(): List<String>
+
+    @Query("SELECT id FROM cached_sessions WHERE isSeed = 0")
+    suspend fun getRealSessionIds(): List<String>
+
+    @Query("SELECT COUNT(*) FROM cached_sessions WHERE isSeed = 0")
+    suspend fun countRealSessions(): Int
+
     @Query("DELETE FROM cached_sessions WHERE id = :id")
     suspend fun deleteSession(id: String)
 
@@ -89,6 +112,15 @@ interface PaceLabDao {
 
     @Query("DELETE FROM cached_sessions")
     suspend fun clearAllSessions()
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun ignoreSessions(sessions: List<IgnoredSessionEntity>)
+
+    @Query("SELECT id FROM ignored_sessions")
+    suspend fun getIgnoredIds(): List<String>
+
+    @Query("DELETE FROM ignored_sessions")
+    suspend fun clearIgnoredSessions()
 
     @Query("SELECT * FROM plan_states")
     fun getPlanStatesFlow(): Flow<List<PlanStateEntity>>
@@ -118,11 +150,12 @@ interface PaceLabDao {
 @Database(
     entities = [
         CachedSessionEntity::class,
+        IgnoredSessionEntity::class,
         PlanStateEntity::class,
         UserSettingsEntity::class,
         RaceEventEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class PaceLabDatabase : RoomDatabase() {
@@ -132,15 +165,26 @@ abstract class PaceLabDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: PaceLabDatabase? = null
 
+        /** Keeps settings, plan progress and the target race when the schema grows. */
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE cached_sessions ADD COLUMN hrHistogram TEXT")
+                db.execSQL("CREATE TABLE IF NOT EXISTS ignored_sessions (id TEXT NOT NULL, PRIMARY KEY(id))")
+            }
+        }
+
         fun getDatabase(context: Context): PaceLabDatabase {
             return INSTANCE ?: synchronized(this) {
-                val instance = Room.databaseBuilder(
+                INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     PaceLabDatabase::class.java,
                     "pacelab_local.db"
-                ).fallbackToDestructiveMigration(dropAllTables = true).build()
-                INSTANCE = instance
-                instance
+                )
+                    .addMigrations(MIGRATION_2_3)
+                    // Only used when no migration path exists (for example an unknown old version).
+                    .fallbackToDestructiveMigration(dropAllTables = true)
+                    .build()
+                    .also { INSTANCE = it }
             }
         }
     }

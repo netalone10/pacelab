@@ -1,6 +1,6 @@
 {
-  "summary": "Updated implementation plan incorporating an interactive Heart Rate Timeline Scrubber (vertical cursor line, touch scrub, exact BPM readout, timestamp, and zone pill), alongside the Race Calendar with 1-week sharp taper and Workout Deduplication manager.",
-  "updatedAt": "2026-10-19T06:12:29.051684597Z",
+  "summary": "Implementation plan to resolve KM splits in activity details by providing a Samsung Health & Health Connect sync troubleshooting guide, improving SplitCalculator tolerance, redesigning the Targets screen with clear visual training pace zones (Easy, Long Run, Tempo, Interval) and concrete workout suggestions, and unifying international athletic English copy.",
+  "updatedAt": "2026-10-20T03:59:49.130318815Z",
   "requestFeedback": true,
   "userFacing": true
 }

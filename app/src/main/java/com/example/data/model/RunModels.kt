@@ -17,7 +17,12 @@ data class RunSession(
     val totalCalories: Double? = null,
     val elevationGainedMeters: Double? = null,
     val isSeed: Boolean = false,
-    val isDuplicate: Boolean = false
+    val isDuplicate: Boolean = false,
+    /**
+     * Encoded bpm -> seconds histogram built from the run's real heart rate samples.
+     * Null means the run has not been processed yet, an empty string means it has no HR data.
+     */
+    val hrHistogram: String? = null
 )
 
 data class RunSplit(

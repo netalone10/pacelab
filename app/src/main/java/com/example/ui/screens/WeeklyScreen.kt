@@ -44,6 +44,7 @@ import com.example.ui.components.DailyVolumeBarChart
 import com.example.ui.components.HealthStatusBanner
 import com.example.ui.components.HrZoneDistributionBar
 import com.example.ui.components.MetricCard
+import com.example.ui.components.WeeklyTrainingLoadBarChart
 import com.example.ui.theme.AthleticBorder
 import com.example.ui.theme.AthleticDarkCard
 import com.example.ui.theme.TextSecondary
@@ -226,6 +227,16 @@ fun WeeklyScreen(
                     unit = "bpm",
                     icon = Icons.Default.Favorite,
                     modifier = Modifier.fillMaxWidth().testTag("metric_avg_hr")
+                )
+            }
+        }
+
+        // 4-Week Progression Training Load Bar Chart (Recharts-style)
+        item {
+            state.fourWeekTrainingLoad?.let { loadSummary ->
+                WeeklyTrainingLoadBarChart(
+                    summary = loadSummary,
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
         }

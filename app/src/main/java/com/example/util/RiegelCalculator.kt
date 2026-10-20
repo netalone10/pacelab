@@ -10,7 +10,11 @@ data class PredictedTargets(
     val easyPaceRange: Pair<Int, Int>,      // (faster, slower) sec/km e.g. 115% - 125%
     val longRunPaceRange: Pair<Int, Int>,   // 110% - 120%
     val tempoPaceRange: Pair<Int, Int>,     // 102% - 107%
-    val intervalPaceRange: Pair<Int, Int>   // 95% - 100%
+    val intervalPaceRange: Pair<Int, Int>,  // 95% - 100%
+    val repetitionPaceRange: Pair<Int, Int> = Pair(
+        (predictedPaceSeconds * 0.88).roundToInt(),
+        (predictedPaceSeconds * 0.94).roundToInt()
+    )
 )
 
 object RiegelCalculator {
@@ -63,6 +67,10 @@ object RiegelCalculator {
         val intervalMin = (targetPaceSec * 0.95).roundToInt()
         val intervalMax = (targetPaceSec * 1.00).roundToInt()
 
+        // Repetition / Speed: 88% to 94%
+        val repMin = (targetPaceSec * 0.88).roundToInt()
+        val repMax = (targetPaceSec * 0.94).roundToInt()
+
         return PredictedTargets(
             targetDistanceMeters = targetDistanceMeters,
             predictedDurationSeconds = predictedDuration,
@@ -70,7 +78,8 @@ object RiegelCalculator {
             easyPaceRange = Pair(easyMin, easyMax),
             longRunPaceRange = Pair(longMin, longMax),
             tempoPaceRange = Pair(tempoMin, tempoMax),
-            intervalPaceRange = Pair(intervalMin, intervalMax)
+            intervalPaceRange = Pair(intervalMin, intervalMax),
+            repetitionPaceRange = Pair(repMin, repMax)
         )
     }
 }

@@ -109,28 +109,7 @@ class MainActivity : ComponentActivity() {
                     onNextWeek = { viewModel.selectWeekOffset(1) },
                     onSync = { viewModel.syncFromHealthConnect() },
                     onRequestPermissions = {
-                        val permissions = setOf(
-                            androidx.health.connect.client.permission.HealthPermission.getReadPermission(
-                                androidx.health.connect.client.records.ExerciseSessionRecord::class
-                            ),
-                            androidx.health.connect.client.permission.HealthPermission.getReadPermission(
-                                androidx.health.connect.client.records.DistanceRecord::class
-                            ),
-                            androidx.health.connect.client.permission.HealthPermission.getReadPermission(
-                                androidx.health.connect.client.records.HeartRateRecord::class
-                            ),
-                            androidx.health.connect.client.permission.HealthPermission.getReadPermission(
-                                androidx.health.connect.client.records.SpeedRecord::class
-                            ),
-                            androidx.health.connect.client.permission.HealthPermission.getReadPermission(
-                                androidx.health.connect.client.records.TotalCaloriesBurnedRecord::class
-                            ),
-                            androidx.health.connect.client.permission.HealthPermission.getReadPermission(
-                                androidx.health.connect.client.records.ElevationGainedRecord::class
-                            ),
-                            "android.permission.health.READ_HEALTH_DATA_HISTORY"
-                        )
-                        permissionsLauncher.launch(permissions)
+                        permissionsLauncher.launch(viewModel.requiredPermissions)
                     },
                     onOpenPlayStore = onOpenPlayStore,
                     onLoadDemoData = { viewModel.loadDemoData() },
@@ -145,7 +124,8 @@ class MainActivity : ComponentActivity() {
                     onTogglePlanDayDone = { w, d, done -> viewModel.togglePlanDayDone(w, d, done) },
                     onOpenRaceSetup = { viewModel.setRaceSetupDialogVisible(true) },
                     onDeleteRace = { viewModel.deleteTargetRace() },
-                    onUpdateHrZones = { z1, z2, z3, z4, max -> viewModel.updateHrZones(z1, z2, z3, z4, max) }
+                    onUpdateHrZones = { z1, z2, z3, z4, max -> viewModel.updateHrZones(z1, z2, z3, z4, max) },
+                    onToggleAutoSync = { viewModel.setAutoSync(it) }
                 )
 
                 // Race Setup & Customization Dialog
@@ -185,7 +165,8 @@ fun PaceLabApp(
     onTogglePlanDayDone: (Int, DayOfWeek, Boolean) -> Unit,
     onOpenRaceSetup: () -> Unit,
     onDeleteRace: () -> Unit,
-    onUpdateHrZones: (Int, Int, Int, Int, Int) -> Unit
+    onUpdateHrZones: (Int, Int, Int, Int, Int) -> Unit,
+    onToggleAutoSync: (Boolean) -> Unit
 ) {
     Scaffold(
         containerColor = AthleticDarkBg,
@@ -327,7 +308,10 @@ fun PaceLabApp(
                     targets = uiState.targets,
                     onUpdateTargetRace = onUpdateTargetRace,
                     onUpdateReferenceRace = onUpdateReferenceRace,
-                    onUseBestRun = onUseBestRun
+                    onUseBestRun = onUseBestRun,
+                    predictionTrend = uiState.predictionTrend,
+                    suggestedRun = uiState.suggestedReferenceRun,
+                    goalLabel = (uiState.targetRace?.distance ?: uiState.userSettings.targetRaceDistance).label
                 )
                 3 -> PlanScreen(
                     userSettings = uiState.userSettings,
@@ -338,11 +322,18 @@ fun PaceLabApp(
                     onUpdateTrainingDays = onUpdateTrainingDays,
                     onToggleDayDone = onTogglePlanDayDone,
                     onOpenRaceSetup = onOpenRaceSetup,
-                    onDeleteRace = onDeleteRace
+                    onDeleteRace = onDeleteRace,
+                    planNote = uiState.planNote
                 )
                 4 -> SettingsAndPrivacyScreen(
                     userSettings = uiState.userSettings,
                     hasHealthPermissions = uiState.hasHealthPermissions,
+                    hasAllHealthPermissions = uiState.hasAllHealthPermissions,
+                    syncError = uiState.syncError,
+                    autoSyncEnabled = uiState.autoSyncEnabled,
+                    hasBackgroundPermission = uiState.hasBackgroundPermission,
+                    lastSyncEpochMs = uiState.lastSyncEpochMs,
+                    onToggleAutoSync = onToggleAutoSync,
                     onRequestPermissions = onRequestPermissions,
                     onOpenPlayStore = onOpenPlayStore,
                     onLoadDemoData = onLoadDemoData,
