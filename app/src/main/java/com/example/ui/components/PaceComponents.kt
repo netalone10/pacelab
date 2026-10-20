@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.health.HealthConnectStatus
 import com.example.data.model.RunSplit
+import com.example.data.repository.SplitSource
 import com.example.ui.theme.AthleticBorder
 import com.example.ui.theme.AthleticDarkCard
 import com.example.ui.theme.StatusDanger
@@ -154,7 +155,10 @@ fun MetricCard(
 fun PaceSplitsTable(
     splits: List<RunSplit>,
     avgPaceSec: Int,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    source: SplitSource = SplitSource.NONE,
+    routeConsentRequired: Boolean = false,
+    onRequestRoute: (() -> Unit)? = null
 ) {
     Card(
         modifier = modifier.border(1.dp, AthleticBorder, RoundedCornerShape(16.dp)),
@@ -194,6 +198,30 @@ fun PaceSplitsTable(
                                 color = TextWhite,
                                 fontWeight = FontWeight.Bold
                             )
+                        }
+
+                        if (routeConsentRequired && onRequestRoute != null) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "Rute GPS lari ini tersedia. Izinkan PaceLab membaca rute untuk membuat split per kilometer.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextWhite,
+                                lineHeight = 18.sp
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = onRequestRoute,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = VoltPrimary,
+                                    contentColor = AthleticDarkCard
+                                ),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("allow_route_access_button")
+                            ) {
+                                Text(text = "Izinkan akses rute", fontWeight = FontWeight.Bold)
+                            }
                         }
 
                         Spacer(modifier = Modifier.height(8.dp))
@@ -280,7 +308,9 @@ fun PaceSplitsTable(
             }
 
             splits.forEach { split ->
-                val diffSec = split.splitSeconds - avgPaceSec
+                val splitPace = split.paceSeconds
+                val isPartial = split.distanceMeters < 999.5
+                val diffSec = splitPace - avgPaceSec
                 val diffColor = when {
                     diffSec < -5 -> StatusSuccess // Faster than avg
                     diffSec > 5 -> StatusDanger   // Slower than avg
@@ -310,11 +340,19 @@ fun PaceSplitsTable(
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = PaceUtils.formatPace(split.splitSeconds),
+                            text = PaceUtils.formatPace(splitPace),
                             style = MaterialTheme.typography.bodyLarge,
                             color = TextWhite,
                             fontWeight = FontWeight.SemiBold
                         )
+                        if (isPartial) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = String.format(Locale.US, "%.2f km", split.distanceMeters / 1000.0),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextTertiary
+                            )
+                        }
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = if (diffSec == 0) "=" else String.format(Locale.US, "%+ds", diffSec),
@@ -329,6 +367,15 @@ fun PaceSplitsTable(
                         color = TextSecondary
                     )
                 }
+            }
+
+            if (source != SplitSource.NONE) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "Sumber: ${source.label}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextTertiary
+                )
             }
         }
     }

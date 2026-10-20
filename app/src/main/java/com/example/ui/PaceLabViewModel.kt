@@ -15,6 +15,7 @@ import com.example.data.model.UserSettings
 import com.example.data.model.WeeklySummary
 import com.example.data.repository.HealthPermissionMissingException
 import com.example.data.repository.PaceLabRepository
+import com.example.data.repository.SplitSource
 import com.example.data.sync.SyncPrefs
 import com.example.data.sync.SyncScheduler
 import com.example.util.FourWeekTrainingLoadSummary
@@ -47,6 +48,9 @@ data class PaceLabUiState(
     val selectedSession: RunSession? = null,
     val selectedSessionSplits: List<RunSplit> = emptyList(),
     val selectedSessionHrPoints: List<HeartRatePoint> = emptyList(),
+    val selectedSplitSource: SplitSource = SplitSource.NONE,
+    val selectedRouteConsentRequired: Boolean = false,
+    val selectedRouteElevationGain: Double? = null,
     val isLoadingSessionDetail: Boolean = false,
     val userSettings: UserSettings = UserSettings(),
     val targetRace: RaceEvent? = null,
@@ -278,25 +282,48 @@ class PaceLabViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    /** Called with the route the user just allowed (null if they refused or closed the dialog). */
+    fun onRouteGranted(route: androidx.health.connect.client.records.ExerciseRoute?) {
+        val session = _uiState.value.selectedSession ?: return
+        if (route == null) return
+        loadSessionDetails(session, route)
+    }
+
     fun selectSession(session: RunSession?) {
         if (session == null) {
             _uiState.update {
                 it.copy(
                     selectedSession = null,
                     selectedSessionSplits = emptyList(),
-                    selectedSessionHrPoints = emptyList()
+                    selectedSessionHrPoints = emptyList(),
+                    selectedSplitSource = SplitSource.NONE,
+                    selectedRouteConsentRequired = false,
+                    selectedRouteElevationGain = null
                 )
             }
             return
         }
 
-        _uiState.update { it.copy(selectedSession = session, isLoadingSessionDetail = true) }
+        _uiState.update { it.copy(selectedSession = session) }
+        loadSessionDetails(session, null)
+    }
+
+    private fun loadSessionDetails(
+        session: RunSession,
+        grantedRoute: androidx.health.connect.client.records.ExerciseRoute?
+    ) {
+        _uiState.update { it.copy(isLoadingSessionDetail = true) }
         viewModelScope.launch {
-            val details = repository.getSessionDetails(session)
+            val details = repository.getSessionDetails(session, grantedRoute)
             _uiState.update {
+                // Ignore a late result if the user already opened another run.
+                if (it.selectedSession?.id != session.id) return@update it
                 it.copy(
                     selectedSessionSplits = details.splits,
                     selectedSessionHrPoints = details.hrPoints,
+                    selectedSplitSource = details.splitSource,
+                    selectedRouteConsentRequired = details.routeConsentRequired,
+                    selectedRouteElevationGain = details.routeElevationGainMeters,
                     isLoadingSessionDetail = false
                 )
             }

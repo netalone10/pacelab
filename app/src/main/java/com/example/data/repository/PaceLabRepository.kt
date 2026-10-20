@@ -79,8 +79,11 @@ class PaceLabRepository(
         }
     }
 
-    suspend fun getSessionDetails(session: RunSession): SessionDetails {
-        return healthConnectRepository.getSessionSplitsAndHr(session)
+    suspend fun getSessionDetails(
+        session: RunSession,
+        grantedRoute: androidx.health.connect.client.records.ExerciseRoute? = null
+    ): SessionDetails {
+        return healthConnectRepository.getSessionSplitsAndHr(session, grantedRoute)
     }
 
     suspend fun deleteSession(sessionId: String) {

@@ -6,8 +6,11 @@ import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.aggregate.AggregateMetric
 import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.ElevationGainedRecord
+import androidx.health.connect.client.records.ExerciseRoute
+import androidx.health.connect.client.records.ExerciseRouteResult
 import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.HeartRateRecord
+import androidx.health.connect.client.records.SpeedRecord
 import androidx.health.connect.client.records.TotalCaloriesBurnedRecord
 import androidx.health.connect.client.request.AggregateRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
@@ -22,9 +25,12 @@ import com.example.data.model.HeartRatePoint
 import com.example.data.model.RunSession
 import com.example.data.model.RunSplit
 import com.example.util.DistanceInterval
+import com.example.util.DistancePoint
 import com.example.util.HrHistogram
 import com.example.util.PaceUtils
+import com.example.util.RoutePoint
 import com.example.util.SplitCalculator
+import com.example.util.TrackMath
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.Duration
@@ -37,9 +43,22 @@ class HealthPermissionMissingException : Exception("Izin baca data lari belum di
 
 data class SyncSummary(val fetched: Int, val added: Int)
 
+/** Where the per-km splits came from, shown in the UI so a missing split is easy to debug. */
+enum class SplitSource(val label: String) {
+    NONE(""),
+    DISTANCE("Distance records"),
+    ROUTE("GPS route"),
+    SPEED("Speed records")
+}
+
 data class SessionDetails(
     val splits: List<RunSplit>,
-    val hrPoints: List<HeartRatePoint>
+    val hrPoints: List<HeartRatePoint>,
+    val splitSource: SplitSource = SplitSource.NONE,
+    /** The GPS route exists but the user has not yet allowed this app to read it for this run. */
+    val routeConsentRequired: Boolean = false,
+    /** Climb computed from the GPS route altitude, used when no ElevationGainedRecord exists. */
+    val routeElevationGainMeters: Double? = null
 )
 
 /**
@@ -51,7 +70,8 @@ interface HealthConnectRepository {
     suspend fun getAvailabilityStatus(): HealthConnectStatus
     suspend fun getGrantedPermissions(): Set<String>
     suspend fun syncAllRunningData(): Result<SyncSummary>
-    suspend fun getSessionSplitsAndHr(session: RunSession): SessionDetails
+    /** [grantedRoute] is the route the user just allowed through ExerciseRouteRequestContract. */
+    suspend fun getSessionSplitsAndHr(session: RunSession, grantedRoute: ExerciseRoute? = null): SessionDetails
 }
 
 class HealthConnectRepositoryImpl(
@@ -287,10 +307,14 @@ class HealthConnectRepositoryImpl(
     }
 
     /**
-     * Real splits come from DistanceRecord intervals, real HR points from HeartRateRecord samples.
-     * Missing data yields empty lists, never simulated values. Demo sessions stay synthetic.
+     * Real splits come from the first usable source: DistanceRecord intervals, then the GPS route,
+     * then SpeedRecord samples. Missing data yields empty lists, never simulated values.
+     * Demo sessions stay synthetic.
      */
-    override suspend fun getSessionSplitsAndHr(session: RunSession): SessionDetails = withContext(Dispatchers.IO) {
+    override suspend fun getSessionSplitsAndHr(
+        session: RunSession,
+        grantedRoute: ExerciseRoute?
+    ): SessionDetails = withContext(Dispatchers.IO) {
         if (session.isSeed) {
             return@withContext SessionDetails(
                 SeedDataGenerator.generateSplitsForSession(session),
@@ -308,43 +332,124 @@ class HealthConnectRepositoryImpl(
             emptyList()
         }
 
-        val splits: List<RunSplit> = try {
-            val total = session.durationSeconds.toDouble()
-            val intervals = mutableListOf<DistanceInterval>()
-            var pageToken: String? = null
-            do {
-                val response = client.readRecords(
-                    ReadRecordsRequest(
-                        recordType = DistanceRecord::class,
-                        timeRangeFilter = TimeRangeFilter.between(session.startTime, session.endTime),
-                        pageToken = pageToken
-                    )
-                )
-                for (rec in response.records) {
-                    val rawStart = Duration.between(session.startTime, rec.startTime).toMillis() / 1000.0
-                    val rawEnd = Duration.between(session.startTime, rec.endTime).toMillis() / 1000.0
-                    if (rawEnd <= rawStart) continue
-                    val start = rawStart.coerceAtLeast(0.0)
-                    val end = rawEnd.coerceAtMost(total)
-                    if (end <= start) continue
-                    // Scale distance when the record sticks out of the session window.
-                    val fraction = (end - start) / (rawEnd - rawStart)
-                    intervals.add(DistanceInterval(start, end, rec.distance.inMeters * fraction))
+        var splits = safely("distance splits") { readDistanceSplits(client, session, hrSamples) } ?: emptyList()
+        var source = if (splits.isNotEmpty()) SplitSource.DISTANCE else SplitSource.NONE
+
+        // The route is needed for GPS splits, and for elevation when no elevation record exists.
+        var routePoints: List<RoutePoint> = emptyList()
+        var consentRequired = false
+        if (splits.isEmpty() || session.elevationGainedMeters == null) {
+            val route = grantedRoute ?: safely("route") {
+                when (val result = client.readRecord(ExerciseSessionRecord::class, session.id)
+                    .record.exerciseRouteResult) {
+                    is ExerciseRouteResult.Data -> result.exerciseRoute
+                    is ExerciseRouteResult.ConsentRequired -> { consentRequired = true; null }
+                    else -> null
                 }
-                pageToken = response.pageToken?.takeIf { it.isNotEmpty() }
-            } while (pageToken != null)
-            SplitCalculator.compute(intervals, hrSamples)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w(tag, "Could not compute splits for ${session.id}", e)
-            emptyList()
+            }
+            if (route != null) {
+                routePoints = route.route.map {
+                    RoutePoint(
+                        sec = Duration.between(session.startTime, it.time).toMillis() / 1000.0,
+                        lat = it.latitude,
+                        lon = it.longitude,
+                        altitude = it.altitude?.inMeters,
+                        accuracyMeters = it.horizontalAccuracy?.inMeters
+                    )
+                }
+            }
         }
+
+        if (splits.isEmpty() && routePoints.isNotEmpty()) {
+            val curve = TrackMath.scaleTo(TrackMath.cumulativeFromRoute(routePoints), session.distanceMeters)
+            if (curve != null) {
+                splits = SplitCalculator.fromCumulative(curve, hrSamples)
+                if (splits.isNotEmpty()) source = SplitSource.ROUTE
+            }
+        }
+
+        if (splits.isEmpty()) {
+            val curve = safely("speed splits") { readSpeedCurve(client, session) }
+            if (curve != null) {
+                splits = SplitCalculator.fromCumulative(curve, hrSamples)
+                if (splits.isNotEmpty()) source = SplitSource.SPEED
+            }
+        }
+
+        Log.d(tag, "Splits for ${session.id}: source=$source count=${splits.size} routeConsent=$consentRequired")
 
         SessionDetails(
             splits = splits,
-            hrPoints = hrSamples.map { HeartRatePoint(it.first, it.second) }
+            hrPoints = hrSamples.map { HeartRatePoint(it.first, it.second) },
+            splitSource = source,
+            routeConsentRequired = consentRequired && splits.isEmpty(),
+            routeElevationGainMeters = TrackMath.elevationGain(routePoints)
         )
+    }
+
+    private suspend fun readDistanceSplits(
+        client: HealthConnectClient,
+        session: RunSession,
+        hrSamples: List<Pair<Long, Int>>
+    ): List<RunSplit> {
+        val total = session.durationSeconds.toDouble()
+        val intervals = mutableListOf<DistanceInterval>()
+        var pageToken: String? = null
+        do {
+            val response = client.readRecords(
+                ReadRecordsRequest(
+                    recordType = DistanceRecord::class,
+                    timeRangeFilter = TimeRangeFilter.between(session.startTime, session.endTime),
+                    pageToken = pageToken
+                )
+            )
+            for (rec in response.records) {
+                val rawStart = Duration.between(session.startTime, rec.startTime).toMillis() / 1000.0
+                val rawEnd = Duration.between(session.startTime, rec.endTime).toMillis() / 1000.0
+                if (rawEnd <= rawStart) continue
+                val start = rawStart.coerceAtLeast(0.0)
+                val end = rawEnd.coerceAtMost(total)
+                if (end <= start) continue
+                // Scale distance when the record sticks out of the session window.
+                val fraction = (end - start) / (rawEnd - rawStart)
+                intervals.add(DistanceInterval(start, end, rec.distance.inMeters * fraction))
+            }
+            pageToken = response.pageToken?.takeIf { it.isNotEmpty() }
+        } while (pageToken != null)
+        return SplitCalculator.compute(intervals, hrSamples)
+    }
+
+    private suspend fun readSpeedCurve(client: HealthConnectClient, session: RunSession): List<DistancePoint>? {
+        val samples = mutableListOf<Pair<Double, Double>>()
+        var pageToken: String? = null
+        do {
+            val response = client.readRecords(
+                ReadRecordsRequest(
+                    recordType = SpeedRecord::class,
+                    timeRangeFilter = TimeRangeFilter.between(session.startTime, session.endTime),
+                    pageToken = pageToken
+                )
+            )
+            for (rec in response.records) {
+                for (sample in rec.samples) {
+                    val sec = Duration.between(session.startTime, sample.time).toMillis() / 1000.0
+                    if (sec < 0.0 || sec > session.durationSeconds) continue
+                    samples.add(sec to sample.speed.inMetersPerSecond)
+                }
+            }
+            pageToken = response.pageToken?.takeIf { it.isNotEmpty() }
+        } while (pageToken != null)
+        return TrackMath.scaleTo(TrackMath.cumulativeFromSpeed(samples), session.distanceMeters)
+    }
+
+    /** Runs a best-effort read: logs and returns null on any failure except cancellation. */
+    private inline fun <T> safely(what: String, block: () -> T?): T? = try {
+        block()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w(tag, "Could not read $what", e)
+        null
     }
 
     private fun RunSession.toEntity() = CachedSessionEntity(

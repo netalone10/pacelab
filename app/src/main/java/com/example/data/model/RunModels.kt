@@ -28,8 +28,14 @@ data class RunSession(
 data class RunSplit(
     val kilometer: Int,
     val splitSeconds: Int,
-    val avgHeartRate: Int?
-)
+    val avgHeartRate: Int?,
+    /** Below 1000 only for the final partial split; [splitSeconds] then covers this distance. */
+    val distanceMeters: Double = 1000.0
+) {
+    /** Seconds per kilometre, so a partial split compares fairly with full ones. */
+    val paceSeconds: Int
+        get() = (splitSeconds * 1000.0 / distanceMeters).toInt()
+}
 
 data class HeartRatePoint(
     val offsetSeconds: Long,

@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -53,6 +54,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.health.connect.client.contracts.ExerciseRouteRequestContract
+import androidx.health.connect.client.records.ExerciseRoute
+import com.example.data.repository.SplitSource
 import com.example.data.model.HeartRatePoint
 import com.example.data.model.RunSession
 import com.example.data.model.RunSplit
@@ -84,7 +88,11 @@ fun RunsScreen(
     onSelectSession: (RunSession?) -> Unit,
     onDeleteSession: (String) -> Unit,
     onResolveDuplicates: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    splitSource: SplitSource = SplitSource.NONE,
+    routeConsentRequired: Boolean = false,
+    routeElevationGain: Double? = null,
+    onRouteGranted: (ExerciseRoute?) -> Unit = {}
 ) {
     var sessionToDelete by remember { mutableStateOf<RunSession?>(null) }
 
@@ -222,6 +230,10 @@ fun RunsScreen(
             splits = selectedSplits,
             hrPoints = selectedHrPoints,
             isLoading = isLoadingDetail,
+            splitSource = splitSource,
+            routeConsentRequired = routeConsentRequired,
+            routeElevationGain = routeElevationGain,
+            onRouteGranted = onRouteGranted,
             onDismiss = { onSelectSession(null) },
             onDelete = {
                 onDeleteSession(selectedSession.id)
@@ -430,8 +442,16 @@ fun RunDetailBottomSheet(
     hrPoints: List<HeartRatePoint>,
     isLoading: Boolean,
     onDismiss: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    splitSource: SplitSource = SplitSource.NONE,
+    routeConsentRequired: Boolean = false,
+    routeElevationGain: Double? = null,
+    onRouteGranted: (ExerciseRoute?) -> Unit = {}
 ) {
+    // Health Connect asks for route access per run, so this launcher takes the session id.
+    val routeLauncher = rememberLauncherForActivityResult(ExerciseRouteRequestContract()) { route ->
+        onRouteGranted(route)
+    }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val zone = ZoneId.systemDefault()
     val localDateTime = session.startTime.atZone(zone)
@@ -506,7 +526,7 @@ fun RunDetailBottomSheet(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             DetailStatItem("Avg HR", session.avgHeartRate?.let { "$it bpm" } ?: "--", TextWhite)
-                            DetailStatItem("Elevation", session.elevationGainedMeters?.let { String.format(Locale.US, "%.0f m", it) } ?: "--", TextWhite)
+                            DetailStatItem("Elevation", (session.elevationGainedMeters ?: routeElevationGain)?.let { String.format(Locale.US, "%.0f m", it) } ?: "--", TextWhite)
                             DetailStatItem("Calories", session.totalCalories?.let { String.format(Locale.US, "%.0f kcal", it) } ?: "--", TextWhite)
                         }
                     }
@@ -528,7 +548,10 @@ fun RunDetailBottomSheet(
                     PaceSplitsTable(
                         splits = splits,
                         avgPaceSec = session.avgPaceSeconds,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        source = splitSource,
+                        routeConsentRequired = routeConsentRequired,
+                        onRequestRoute = { routeLauncher.launch(session.id) }
                     )
                 }
 
