@@ -114,6 +114,7 @@ class MainActivity : ComponentActivity() {
                     onOpenPlayStore = onOpenPlayStore,
                     onLoadDemoData = { viewModel.loadDemoData() },
                     onSelectSession = { viewModel.selectSession(it) },
+                    onRouteGranted = { viewModel.onRouteGranted(it) },
                     onDeleteSession = { viewModel.deleteSession(it) },
                     onResolveDuplicates = { viewModel.resolveDuplicateWorkouts() },
                     onUpdateTargetRace = { viewModel.updateTargetRaceDistance(it) },
@@ -155,6 +156,7 @@ fun PaceLabApp(
     onOpenPlayStore: () -> Unit,
     onLoadDemoData: () -> Unit,
     onSelectSession: (RunSession?) -> Unit,
+    onRouteGranted: (androidx.health.connect.client.records.ExerciseRoute?) -> Unit,
     onDeleteSession: (String) -> Unit,
     onResolveDuplicates: () -> Unit,
     onUpdateTargetRace: (RaceDistance) -> Unit,
@@ -301,7 +303,11 @@ fun PaceLabApp(
                     isLoadingDetail = uiState.isLoadingSessionDetail,
                     onSelectSession = onSelectSession,
                     onDeleteSession = onDeleteSession,
-                    onResolveDuplicates = onResolveDuplicates
+                    onResolveDuplicates = onResolveDuplicates,
+                    splitSource = uiState.selectedSplitSource,
+                    routeConsentRequired = uiState.selectedRouteConsentRequired,
+                    routeElevationGain = uiState.selectedRouteElevationGain,
+                    onRouteGranted = onRouteGranted
                 )
                 2 -> TargetsScreen(
                     userSettings = uiState.userSettings,

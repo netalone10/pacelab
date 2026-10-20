@@ -50,6 +50,7 @@ import com.example.data.model.UserSettings
 import com.example.ui.theme.AthleticBorder
 import com.example.ui.theme.AthleticDarkCard
 import com.example.ui.theme.TextSecondary
+import com.example.ui.theme.StatusWarning
 import com.example.ui.theme.TextTertiary
 import com.example.ui.theme.TextWhite
 import com.example.ui.theme.VoltOnPrimary
@@ -62,6 +63,7 @@ import com.example.ui.theme.Zone5Red
 import com.example.util.PaceUtils
 import com.example.util.PredictedTargets
 import com.example.util.PredictionPoint
+import com.example.util.VdotCalculator
 import java.util.Locale
 
 @Composable
@@ -176,8 +178,15 @@ fun TargetsScreen(
                         Text(
                             text = deltaText,
                             style = MaterialTheme.typography.titleMedium,
-                            color = if (delta <= 0) VoltPrimary else TextWhite,
+                            color = if (delta <= 0) VoltPrimary else StatusWarning,
                             fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        // The list below shows only the last 8 weeks, so name the baseline explicitly.
+                        Text(
+                            text = "Baseline ${PaceUtils.formatDuration(first)} (week of ${predictionTrend.first().weekMonday}), now ${PaceUtils.formatDuration(last)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextTertiary
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
@@ -407,8 +416,12 @@ fun TargetsScreen(
                         userSettings.refDistanceMeters,
                         userSettings.refDurationSeconds
                     )
+                    // VDOT is computed from this baseline run (Daniels/Gilbert), not a stored setting.
+                    val vdotText = VdotCalculator
+                        .vdot(userSettings.refDistanceMeters, userSettings.refDurationSeconds)
+                        ?.let { String.format(Locale.US, "~%.0f", it) } ?: "--"
                     Text(
-                        text = "Baseline Pace: ${PaceUtils.formatPace(refPace)} · Est. VO2 Max: ~${userSettings.vo2Max.toInt()} ml/kg/min",
+                        text = "Baseline Pace: ${PaceUtils.formatPace(refPace)} · Est. VDOT: $vdotText (Daniels formula)",
                         style = MaterialTheme.typography.bodyMedium,
                         color = TextTertiary
                     )
