@@ -56,6 +56,8 @@ import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.TextWhite
 import com.example.ui.theme.VoltOnPrimary
 import com.example.ui.theme.VoltPrimary
+import com.example.util.EasyRunCheck
+import com.example.util.toHrZones
 import java.time.DayOfWeek
 
 class MainActivity : ComponentActivity() {
@@ -307,7 +309,12 @@ fun PaceLabApp(
                     splitSource = uiState.selectedSplitSource,
                     routeConsentRequired = uiState.selectedRouteConsentRequired,
                     routeElevationGain = uiState.selectedRouteElevationGain,
-                    onRouteGranted = onRouteGranted
+                    onRouteGranted = onRouteGranted,
+                    effortCheck = uiState.selectedSession?.let { session ->
+                        uiState.targets?.let { targets ->
+                            EasyRunCheck.assess(session, uiState.userSettings.toHrZones(), targets)
+                        }
+                    }
                 )
                 2 -> TargetsScreen(
                     userSettings = uiState.userSettings,

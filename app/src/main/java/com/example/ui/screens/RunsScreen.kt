@@ -72,6 +72,7 @@ import com.example.ui.theme.TextTertiary
 import com.example.ui.theme.TextWhite
 import com.example.ui.theme.VoltOnPrimary
 import com.example.ui.theme.VoltPrimary
+import com.example.util.EasyRunCheck
 import com.example.util.PaceUtils
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -92,7 +93,8 @@ fun RunsScreen(
     splitSource: SplitSource = SplitSource.NONE,
     routeConsentRequired: Boolean = false,
     routeElevationGain: Double? = null,
-    onRouteGranted: (ExerciseRoute?) -> Unit = {}
+    onRouteGranted: (ExerciseRoute?) -> Unit = {},
+    effortCheck: EasyRunCheck.Result? = null
 ) {
     var sessionToDelete by remember { mutableStateOf<RunSession?>(null) }
 
@@ -234,6 +236,7 @@ fun RunsScreen(
             routeConsentRequired = routeConsentRequired,
             routeElevationGain = routeElevationGain,
             onRouteGranted = onRouteGranted,
+            effortCheck = effortCheck,
             onDismiss = { onSelectSession(null) },
             onDelete = {
                 onDeleteSession(selectedSession.id)
@@ -446,7 +449,8 @@ fun RunDetailBottomSheet(
     splitSource: SplitSource = SplitSource.NONE,
     routeConsentRequired: Boolean = false,
     routeElevationGain: Double? = null,
-    onRouteGranted: (ExerciseRoute?) -> Unit = {}
+    onRouteGranted: (ExerciseRoute?) -> Unit = {},
+    effortCheck: EasyRunCheck.Result? = null
 ) {
     // Health Connect asks for route access per run, so this launcher takes the session id.
     val routeLauncher = rememberLauncherForActivityResult(ExerciseRouteRequestContract()) { route ->
@@ -528,6 +532,45 @@ fun RunDetailBottomSheet(
                             DetailStatItem("Avg HR", session.avgHeartRate?.let { "$it bpm" } ?: "--", TextWhite)
                             DetailStatItem("Elevation", (session.elevationGainedMeters ?: routeElevationGain)?.let { String.format(Locale.US, "%.0f m", it) } ?: "--", TextWhite)
                             DetailStatItem("Calories", session.totalCalories?.let { String.format(Locale.US, "%.0f kcal", it) } ?: "--", TextWhite)
+                        }
+                    }
+                }
+            }
+
+            if (effortCheck != null && effortCheck.tooHard) {
+                item {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, StatusWarning, RoundedCornerShape(16.dp)),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = AthleticDarkCard)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Warning,
+                                contentDescription = null,
+                                tint = StatusWarning,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text(
+                                    text = "Easy pace, hard effort",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = TextWhite,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "${effortCheck.aboveZ2Percent}% of this run was above Zone 2. " +
+                                        "Slow down on easy days so your quality days stay sharp.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary
+                                )
+                            }
                         }
                     }
                 }
