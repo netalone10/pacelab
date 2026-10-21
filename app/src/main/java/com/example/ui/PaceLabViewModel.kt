@@ -238,7 +238,7 @@ class PaceLabViewModel(application: Application) : AndroidViewModel(application)
                 lastSyncEpochMs = SyncPrefs.lastSyncEpochMs(getApplication()),
                 // A missing permission is shown by the status text, not as an error.
                 syncError = if (error == null || error is HealthPermissionMissingException) null
-                else (error.message ?: "Sync gagal")
+                else (error.message ?: "Sync failed")
             )
         }
     }

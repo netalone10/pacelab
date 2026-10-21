@@ -39,7 +39,7 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.roundToInt
 
 /** Thrown when the minimum read permissions (exercise + distance) are not granted. */
-class HealthPermissionMissingException : Exception("Izin baca data lari belum diberikan")
+class HealthPermissionMissingException : Exception("Permission to read running data has not been granted")
 
 data class SyncSummary(val fetched: Int, val added: Int)
 
@@ -122,7 +122,7 @@ class HealthConnectRepositoryImpl(
     override suspend fun syncAllRunningData(): Result<SyncSummary> = withContext(Dispatchers.IO) {
         try {
             val client = getClient()
-                ?: return@withContext Result.failure(IllegalStateException("Health Connect tidak tersedia di device ini"))
+                ?: return@withContext Result.failure(IllegalStateException("Health Connect is not available on this device"))
 
             val granted = client.permissionController.getGrantedPermissions()
             if (!granted.containsAll(HealthPermissions.core)) {

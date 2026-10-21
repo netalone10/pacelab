@@ -490,6 +490,15 @@ fun PlannedDayCard(
                 }
             }
 
+            dayItem.structure?.let { structure ->
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = structure,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary
+                )
+            }
+
             Spacer(modifier = Modifier.height(10.dp))
 
             // Footer: Target Heart Rate Zone Chip & Matched Session Info

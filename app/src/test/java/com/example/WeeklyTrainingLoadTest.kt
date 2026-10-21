@@ -74,7 +74,7 @@ class WeeklyTrainingLoadTest {
         assertEquals("W-3", summary.weeks[0].weekLabel)
         assertEquals("W-2", summary.weeks[1].weekLabel)
         assertEquals("W-1", summary.weeks[2].weekLabel)
-        assertEquals("Minggu Ini", summary.weeks[3].weekLabel)
+        assertEquals("This Week", summary.weeks[3].weekLabel)
         assertTrue(summary.weeks[3].isCurrentWeek)
 
         // Demo sessions have runs in all 4 weeks

@@ -111,7 +111,7 @@ fun WeeklyTrainingLoadBarChart(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "Beban latihan 4 minggu terakhir (Health Connect)",
+                        text = "Training load, last 4 weeks (Health Connect)",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary
                     )

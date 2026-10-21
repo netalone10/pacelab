@@ -22,6 +22,13 @@ object RiegelCalculator {
     private const val RIEGEL_EXPONENT = 1.06
 
     /**
+     * Training paces are anchored to the predicted 10K race pace, whatever the goal distance is.
+     * Easy, tempo and interval work depends on current fitness, not on the race being trained for,
+     * so switching the goal from 10K to a half marathon must not slow down every training zone.
+     */
+    const val ZONE_REFERENCE_METERS = 10000.0
+
+    /**
      * Calculates predicted race time using Riegel's formula:
      * T2 = T1 * (D2 / D1) ^ 1.06
      */
@@ -38,8 +45,22 @@ object RiegelCalculator {
         return predictedSeconds.roundToInt().toLong()
     }
 
+    /** Predicted pace in seconds per kilometre for [distanceMeters], rounded to whole seconds. */
+    private fun predictedPaceSeconds(
+        refDistanceMeters: Double,
+        refDurationSeconds: Long,
+        distanceMeters: Double
+    ): Int {
+        val km = distanceMeters / 1000.0
+        if (km <= 0.0) return 0
+        val duration = predictRaceTimeSeconds(refDistanceMeters, refDurationSeconds, distanceMeters)
+        return (duration.toDouble() / km).roundToInt()
+    }
+
     /**
-     * Computes the complete predicted target and training pace ranges for a given target distance.
+     * Computes the predicted race result for the target distance and the training pace ranges.
+     * The race prediction follows [targetDistanceMeters]; the training zones follow the predicted
+     * 10K pace ([ZONE_REFERENCE_METERS]) so they stay stable when the goal distance changes.
      */
     fun computeTargets(
         refDistanceMeters: Double,
@@ -47,29 +68,29 @@ object RiegelCalculator {
         targetDistanceMeters: Double
     ): PredictedTargets {
         val predictedDuration = predictRaceTimeSeconds(refDistanceMeters, refDurationSeconds, targetDistanceMeters)
-        val targetKm = targetDistanceMeters / 1000.0
-        val targetPaceSec = if (targetKm > 0.0) (predictedDuration.toDouble() / targetKm).roundToInt() else 0
+        val targetPaceSec = predictedPaceSeconds(refDistanceMeters, refDurationSeconds, targetDistanceMeters)
+        val zonePaceSec = predictedPaceSeconds(refDistanceMeters, refDurationSeconds, ZONE_REFERENCE_METERS)
 
-        // In running, higher seconds/km = slower pace.
-        // Easy run: 115% to 125% of 10K race pace
-        val easyMin = (targetPaceSec * 1.15).roundToInt()
-        val easyMax = (targetPaceSec * 1.25).roundToInt()
+        // In running, higher seconds/km = slower pace. All ranges are a share of 10K race pace.
+        // Easy run: 115% to 125%
+        val easyMin = (zonePaceSec * 1.15).roundToInt()
+        val easyMax = (zonePaceSec * 1.25).roundToInt()
 
         // Long run: 110% to 120%
-        val longMin = (targetPaceSec * 1.10).roundToInt()
-        val longMax = (targetPaceSec * 1.20).roundToInt()
+        val longMin = (zonePaceSec * 1.10).roundToInt()
+        val longMax = (zonePaceSec * 1.20).roundToInt()
 
         // Tempo / Threshold: 102% to 107%
-        val tempoMin = (targetPaceSec * 1.02).roundToInt()
-        val tempoMax = (targetPaceSec * 1.07).roundToInt()
+        val tempoMin = (zonePaceSec * 1.02).roundToInt()
+        val tempoMax = (zonePaceSec * 1.07).roundToInt()
 
         // Interval / VO2max: 95% to 100%
-        val intervalMin = (targetPaceSec * 0.95).roundToInt()
-        val intervalMax = (targetPaceSec * 1.00).roundToInt()
+        val intervalMin = (zonePaceSec * 0.95).roundToInt()
+        val intervalMax = (zonePaceSec * 1.00).roundToInt()
 
         // Repetition / Speed: 88% to 94%
-        val repMin = (targetPaceSec * 0.88).roundToInt()
-        val repMax = (targetPaceSec * 0.94).roundToInt()
+        val repMin = (zonePaceSec * 0.88).roundToInt()
+        val repMax = (zonePaceSec * 0.94).roundToInt()
 
         return PredictedTargets(
             targetDistanceMeters = targetDistanceMeters,

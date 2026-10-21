@@ -22,7 +22,9 @@ data class PlanDayItem(
     val isDone: Boolean = false,
     val matchedDistanceMeters: Double? = null,
     val matchedPaceSec: Int? = null,
-    val matchedDate: LocalDate? = null
+    val matchedDate: LocalDate? = null,
+    /** Session layout for quality days (warm-up, work, cool-down). Null for plain runs. */
+    val structure: String? = null
 )
 
 object PlanGenerator {

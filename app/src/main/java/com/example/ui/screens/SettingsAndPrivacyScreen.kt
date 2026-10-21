@@ -340,7 +340,7 @@ fun SettingsAndPrivacyScreen(
                                 letterSpacing = 1.sp
                             )
                             Text(
-                                text = "Tarik lari baru tiap 6 jam",
+                                text = "Pull new runs every 6 hours",
                                 style = MaterialTheme.typography.titleMedium,
                                 color = TextWhite,
                                 fontWeight = FontWeight.Bold
@@ -357,10 +357,10 @@ fun SettingsAndPrivacyScreen(
                     Spacer(modifier = Modifier.height(8.dp))
 
                     val lastText = if (lastSyncEpochMs > 0L) {
-                        "Sync terakhir: " + java.text.SimpleDateFormat("d MMM yyyy HH:mm", java.util.Locale.getDefault())
+                        "Last sync: " + java.text.SimpleDateFormat("d MMM yyyy HH:mm", java.util.Locale.getDefault())
                             .format(java.util.Date(lastSyncEpochMs))
                     } else {
-                        "Belum pernah sync."
+                        "Never synced."
                     }
                     Text(
                         text = lastText,
@@ -371,7 +371,7 @@ fun SettingsAndPrivacyScreen(
                     if (autoSyncEnabled && !hasBackgroundPermission) {
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Izin baca di background belum diberikan. Tanpa itu, sync otomatis cuma jalan kalau Android mengizinkan. Tap Manage Permissions dan izinkan. Di versi Health Connect lama, izin ini mungkin tidak tersedia.",
+                            text = "Background read permission is not granted. Without it, auto sync only runs when Android allows it. Tap Manage Permissions to allow it. On older Health Connect versions this permission may not be available.",
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary
                         )

@@ -10,11 +10,11 @@ import java.util.Locale
 import kotlin.math.roundToInt
 
 enum class TrainingLoadStatus(val label: String, val description: String) {
-    OPTIMAL("Optimal", "Peningkatan beban aman dan memicu adaptasi kebugaran yang ideal."),
-    MAINTAINING("Stabil (Maintaining)", "Beban stabil, menjaga kapasitas aerobik dan kebugaran yang sudah ada."),
-    OVERREACHING("Tinggi (Overreaching)", "Lonjakan beban cukup tinggi. Perhatikan tanda kelelahan otot."),
-    RECOVERY("Pemulihan (Deload)", "Beban lebih rendah, memberikan waktu regenerasi otot dan glikogen."),
-    INSUFFICIENT("Belum Ada Data", "Belum ada volume latihan yang cukup pada periode ini.")
+    OPTIMAL("Optimal", "Load is rising safely and driving the right fitness adaptation."),
+    MAINTAINING("Maintaining", "Load is steady and holds your current aerobic capacity."),
+    OVERREACHING("Overreaching", "Load jumped sharply. Watch for signs of muscle fatigue."),
+    RECOVERY("Recovery (Deload)", "Lower load gives your muscles and glycogen time to recover."),
+    INSUFFICIENT("No Data", "Not enough training volume in this period.")
 }
 
 data class WeeklyTrainingLoadItem(
@@ -153,7 +153,7 @@ object WeeklyTrainingLoadCalculator {
                 0 -> "W-3"
                 1 -> "W-2"
                 2 -> "W-1"
-                else -> "Minggu Ini"
+                else -> "This Week"
             }
             val dateRangeStr = "${mon.format(shortDateFormatter)} - ${sun.format(shortDateFormatter)}"
 
@@ -215,22 +215,22 @@ object WeeklyTrainingLoadCalculator {
 
         val feedback = when (overallStatus) {
             TrainingLoadStatus.OPTIMAL -> {
-                val pctStr = progPercent?.let { String.format(Locale.US, "%+.1f%%", it) } ?: "stabil"
-                "Progres latihan seimbang ($pctStr vs minggu lalu). Rasio beban berada di zona aman untuk adaptasi aerobik optimal."
+                val pctStr = progPercent?.let { String.format(Locale.US, "%+.1f%%", it) } ?: "steady"
+                "Balanced training progress ($pctStr vs last week). Your load ratio is in the safe zone for aerobic adaptation."
             }
             TrainingLoadStatus.OVERREACHING -> {
                 val pctStr = progPercent?.let { String.format(Locale.US, "%+.1f%%", it) } ?: "+25%+"
-                "Peningkatan beban cukup tajam ($pctStr). Waspadai kelelahan otot berlebih, prioritaskan tidur dan lari recovery Zone 2."
+                "Load is rising sharply ($pctStr). Watch for excess muscle fatigue, prioritize sleep and easy Zone 2 recovery runs."
             }
             TrainingLoadStatus.RECOVERY -> {
                 val pctStr = progPercent?.let { String.format(Locale.US, "%.1f%%", it) } ?: "-20%"
-                "Beban latihan berkurang ($pctStr). Periode deload/pemulihan yang bagus untuk regenerasi jaringan otot."
+                "Training load dropped ($pctStr). A good deload period for your muscles to recover."
             }
             TrainingLoadStatus.MAINTAINING -> {
-                "Volume latihan konsisten dan stabil. Kebugaran aerobik dasar terjaga dengan baik."
+                "Training volume is steady and consistent. Your base aerobic fitness is holding up well."
             }
             TrainingLoadStatus.INSUFFICIENT -> {
-                "Belum ada aktivitas lari tercatat untuk minggu ini. Selesaikan sesi lari untuk mulai membangun ritme latihan."
+                "No runs logged this week yet. Complete a session to start building your training rhythm."
             }
         }
 

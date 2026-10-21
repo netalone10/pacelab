@@ -130,7 +130,7 @@ object PeriodizedPlanner {
         if (daysSinceLast >= 14) {
             return VolumeAdvice(
                 (avg * 0.60).coerceAtLeast(5.0),
-                "Sudah $daysSinceLast hari tanpa lari. Volume mulai dari 60% rata-rata terakhir."
+                "No runs for $daysSinceLast days. Weekly volume restarts at 60% of your recent average."
             )
         }
 
@@ -146,11 +146,11 @@ object PeriodizedPlanner {
         return when {
             hasHistory && lastWeekKm < avg * 0.5 -> VolumeAdvice(
                 (avg * 0.75).coerceAtLeast(5.0),
-                String.format(java.util.Locale.US, "Minggu lalu cuma %.1f km (rata-rata %.1f km). Volume diturunkan 25%% biar masuk lagi pelan.", lastWeekKm, avg)
+                String.format(java.util.Locale.US, "Last week was only %.1f km (average %.1f km). Volume is reduced by 25%% to ease back in.", lastWeekKm, avg)
             )
             hasHistory && lastWeekKm > avg * 1.25 -> VolumeAdvice(
                 avg,
-                String.format(java.util.Locale.US, "Minggu lalu %.1f km, lonjakan di atas rata-rata %.1f km. Volume ditahan, tidak naik dulu.", lastWeekKm, avg)
+                String.format(java.util.Locale.US, "Last week was %.1f km, a jump above your %.1f km average. Volume is held with no progression this week.", lastWeekKm, avg)
             )
             else -> VolumeAdvice(avg, null)
         }
@@ -364,19 +364,25 @@ object PeriodizedPlanner {
             share: Double,
             paces: Pair<Int, Int>,
             hr: String
-        ) = PlanDayItem(
-            dayOfWeek = day,
-            type = type,
-            targetDistanceMeters = roundTo500m(weeklyMeters * share),
-            minPaceSec = paces.first,
-            maxPaceSec = paces.second,
-            targetHrZone = hr
-        )
+        ): PlanDayItem {
+            val meters = roundTo500m(weeklyMeters * share)
+            return PlanDayItem(
+                dayOfWeek = day,
+                type = type,
+                targetDistanceMeters = meters,
+                minPaceSec = paces.first,
+                maxPaceSec = paces.second,
+                targetHrZone = hr,
+                structure = qualityStructure(meters, type)
+            )
+        }
 
+        // The long run stays at about a third of the week (half with only two running days), so
+        // one session never carries most of the weekly load.
         return when (daysPerWeek) {
             2 -> listOf(
-                item(DayOfWeek.TUESDAY, qualityType, 0.40, qualityPaces, qualityHr),
-                item(DayOfWeek.SATURDAY, WorkoutType.LONG_RUN, 0.60, targets.longRunPaceRange, aerobicHr)
+                item(DayOfWeek.TUESDAY, qualityType, 0.50, qualityPaces, qualityHr),
+                item(DayOfWeek.SATURDAY, WorkoutType.LONG_RUN, 0.50, targets.longRunPaceRange, aerobicHr)
             )
             4 -> listOf(
                 item(DayOfWeek.TUESDAY, WorkoutType.EASY, 0.22, targets.easyPaceRange, aerobicHr),
@@ -385,11 +391,42 @@ object PeriodizedPlanner {
                 item(DayOfWeek.SUNDAY, WorkoutType.LONG_RUN, 0.35, targets.longRunPaceRange, aerobicHr)
             )
             else -> listOf(
-                item(DayOfWeek.TUESDAY, WorkoutType.EASY, 0.30, targets.easyPaceRange, aerobicHr),
-                item(DayOfWeek.THURSDAY, qualityType, 0.25, qualityPaces, qualityHr),
-                item(DayOfWeek.SATURDAY, WorkoutType.LONG_RUN, 0.45, targets.longRunPaceRange, aerobicHr)
+                item(DayOfWeek.TUESDAY, WorkoutType.EASY, 0.35, targets.easyPaceRange, aerobicHr),
+                item(DayOfWeek.THURSDAY, qualityType, 0.30, qualityPaces, qualityHr),
+                item(DayOfWeek.SATURDAY, WorkoutType.LONG_RUN, 0.35, targets.longRunPaceRange, aerobicHr)
             )
         }
+    }
+
+    private const val INTERVAL_REP_METERS = 800.0
+    private const val INTERVAL_JOG_METERS = 400.0
+    private const val MAX_INTERVAL_REPS = 8
+
+    /**
+     * Layout of a quality day. The day's distance covers the whole session: a warm-up, the work
+     * itself and a cool-down, so the quality pace only applies to the work part. Returns null for
+     * easy or long runs, and when the session is too short to hold a meaningful work block.
+     */
+    fun qualityStructure(totalMeters: Double, type: WorkoutType): String? {
+        if (type != WorkoutType.TEMPO && type != WorkoutType.INTERVALS) return null
+        val warmUp = roundTo500m((totalMeters * 0.25).coerceIn(1000.0, 2000.0))
+        val coolDown = roundTo500m((totalMeters * 0.15).coerceIn(500.0, 1500.0))
+        val work = totalMeters - warmUp - coolDown
+        val start = "Warm-up ${formatKm(warmUp)} easy"
+        val end = "cool-down ${formatKm(coolDown)} easy"
+        return if (type == WorkoutType.TEMPO) {
+            if (work < 1500.0) null else "$start, ${formatKm(work)} at tempo pace, $end"
+        } else {
+            val reps = (work / (INTERVAL_REP_METERS + INTERVAL_JOG_METERS)).toInt().coerceAtMost(MAX_INTERVAL_REPS)
+            if (reps < 2) null
+            else "$start, $reps x ${INTERVAL_REP_METERS.toInt()} m at interval pace with " +
+                "${INTERVAL_JOG_METERS.toInt()} m easy jog between, $end"
+        }
+    }
+
+    private fun formatKm(meters: Double): String {
+        val km = meters / 1000.0
+        return if (meters % 1000.0 == 0.0) "${km.toInt()} km" else String.format(java.util.Locale.US, "%.1f km", km)
     }
 
     private fun roundTo500m(meters: Double): Double {
