@@ -27,12 +27,14 @@ import com.example.util.PredictionPoint
 import com.example.util.PredictionTrendCalculator
 import com.example.util.PredictedTargets
 import com.example.util.RiegelCalculator
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.ZoneId
@@ -108,90 +110,104 @@ class PaceLabViewModel(application: Application) : AndroidViewModel(application)
                 // anchored to the real current week so browsing never shifts the schedule.
                 val viewedMonday = _uiState.value.currentWeekMonday
                 val planMonday = LocalDate.now().with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
-                val weeklySummary = repository.computeWeeklySummary(sessions, viewedMonday, settings)
-                val fourWeekLoad = repository.compute4WeekTrainingLoad(sessions, viewedMonday, settings)
-                val activeSessions = sessions.filter { !it.isDuplicate }
+                val derived = withContext(Dispatchers.Default) {
+                    val weeklySummary = repository.computeWeeklySummary(sessions, viewedMonday, settings)
+                    val fourWeekLoad = repository.compute4WeekTrainingLoad(sessions, viewedMonday, settings)
+                    val activeSessions = sessions.filter { !it.isDuplicate }
 
-                val goalDistance = targetRace?.distance?.meters ?: settings.targetRaceDistance.meters
+                    val goalDistance = targetRace?.distance?.meters ?: settings.targetRaceDistance.meters
 
-                // Compute targets with Riegel formula
-                val targets = RiegelCalculator.computeTargets(
-                    refDistanceMeters = settings.refDistanceMeters,
-                    refDurationSeconds = settings.refDurationSeconds,
-                    targetDistanceMeters = goalDistance
-                )
+                    // Compute targets with Riegel formula
+                    val targets = RiegelCalculator.computeTargets(
+                        refDistanceMeters = settings.refDistanceMeters,
+                        refDurationSeconds = settings.refDurationSeconds,
+                        targetDistanceMeters = goalDistance
+                    )
 
-                // Generate periodized training schedule leading up to race date
-                val zones = HrZones(
-                    z1Max = settings.z1Max,
-                    z2Min = settings.z2Min,
-                    z2Max = settings.z2Max,
-                    z3Min = settings.z3Min,
-                    z3Max = settings.z3Max,
-                    z4Min = settings.z4Min,
-                    z4Max = settings.z4Max,
-                    maxHr = settings.maxHr
-                )
+                    // Generate periodized training schedule leading up to race date
+                    val zones = HrZones(
+                        z1Max = settings.z1Max,
+                        z2Min = settings.z2Min,
+                        z2Max = settings.z2Max,
+                        z3Min = settings.z3Min,
+                        z3Max = settings.z3Max,
+                        z4Min = settings.z4Min,
+                        z4Max = settings.z4Max,
+                        maxHr = settings.maxHr
+                    )
 
-                val volumeAdvice = PeriodizedPlanner.adaptiveBaseVolume(
-                    sessions = activeSessions,
-                    planMonday = planMonday,
-                    daysPerWeek = settings.trainingDaysPerWeek
-                )
-                val baseVolume = volumeAdvice.baseKm
+                    val volumeAdvice = PeriodizedPlanner.adaptiveBaseVolume(
+                        sessions = activeSessions,
+                        planMonday = planMonday,
+                        daysPerWeek = settings.trainingDaysPerWeek
+                    )
+                    val baseVolume = volumeAdvice.baseKm
 
-                val generatedWeeks = PeriodizedPlanner.generatePeriodizedPlan(
-                    raceEvent = targetRace,
-                    baseWeeklyVolumeKm = baseVolume,
-                    daysPerWeek = settings.trainingDaysPerWeek,
-                    targets = targets,
-                    zones = zones,
-                    currentMonday = planMonday
-                )
+                    val generatedWeeks = PeriodizedPlanner.generatePeriodizedPlan(
+                        raceEvent = targetRace,
+                        baseWeeklyVolumeKm = baseVolume,
+                        daysPerWeek = settings.trainingDaysPerWeek,
+                        targets = targets,
+                        zones = zones,
+                        currentMonday = planMonday
+                    )
 
-                // Match with actual sessions & Room plan states
-                val zone = ZoneId.systemDefault()
-                val realSessionPairs = activeSessions.map { session ->
-                    val date = session.startTime.atZone(zone).toLocalDate()
-                    Pair(date, Pair(session.distanceMeters, session.avgPaceSeconds))
-                }
-
-                val matchedWeeks = generatedWeeks.map { week ->
-                    val matchedDays = PlanGenerator.matchRealSessions(week.days, week.weekStartMonday, realSessionPairs)
-                    val finalizedDays = matchedDays.map { day ->
-                        val key = planKey(week.weekStartMonday, day.dayOfWeek)
-                        val storedState = planStates[key]
-                        if (storedState != null) {
-                            day.copy(isDone = storedState.isDone)
-                        } else {
-                            day
-                        }
+                    // Match with actual sessions & Room plan states
+                    val zone = ZoneId.systemDefault()
+                    val realSessionPairs = activeSessions.map { session ->
+                        val date = session.startTime.atZone(zone).toLocalDate()
+                        Pair(date, Pair(session.distanceMeters, session.avgPaceSeconds))
                     }
-                    week.copy(days = finalizedDays)
+
+                    val matchedWeeks = generatedWeeks.map { week ->
+                        val matchedDays = PlanGenerator.matchRealSessions(week.days, week.weekStartMonday, realSessionPairs)
+                        val finalizedDays = matchedDays.map { day ->
+                            val key = planKey(week.weekStartMonday, day.dayOfWeek)
+                            val storedState = planStates[key]
+                            if (storedState != null) {
+                                day.copy(isDone = storedState.isDone)
+                            } else {
+                                day
+                            }
+                        }
+                        week.copy(days = finalizedDays)
+                    }
+
+                    val duplicatesCount = sessions.count { it.isDuplicate }
+
+                    // Suggest a new reference only when a recent run predicts a clearly faster race
+                    // (more than 1%) than the reference currently in use.
+                    val currentPrediction = RiegelCalculator
+                        .predictRaceTimeSeconds(settings.refDistanceMeters, settings.refDurationSeconds, goalDistance)
+                    val suggestion = PredictionTrendCalculator.bestRecentRun(sessions, goalDistance)
+                        ?.takeIf { PredictionTrendCalculator.predictSeconds(it, goalDistance) < currentPrediction * 0.99 }
+
+                    DerivedData(
+                        weeklySummary = weeklySummary,
+                        fourWeekLoad = fourWeekLoad,
+                        planNote = volumeAdvice.note,
+                        predictionTrend = PredictionTrendCalculator.trend(sessions, goalDistance),
+                        suggestion = suggestion,
+                        targets = targets,
+                        plan = matchedWeeks,
+                        duplicateCount = duplicatesCount
+                    )
                 }
-
-                val duplicatesCount = sessions.count { it.isDuplicate }
-
-                // Suggest a new reference only when a recent run predicts a clearly faster race
-                // (more than 1%) than the reference currently in use.
-                val currentPrediction = RiegelCalculator
-                    .predictRaceTimeSeconds(settings.refDistanceMeters, settings.refDurationSeconds, goalDistance)
-                val suggestion = PredictionTrendCalculator.bestRecentRun(sessions, goalDistance)
-                    ?.takeIf { PredictionTrendCalculator.predictSeconds(it, goalDistance) < currentPrediction * 0.99 }
 
                 _uiState.update { current ->
                     current.copy(
                         allSessions = sessions,
-                        duplicateSessionCount = duplicatesCount,
+                        duplicateSessionCount = derived.duplicateCount,
                         userSettings = settings,
                         targetRace = targetRace,
-                        weeklySummary = weeklySummary,
-                        fourWeekTrainingLoad = fourWeekLoad,
-                        planNote = volumeAdvice.note,
-                        predictionTrend = PredictionTrendCalculator.trend(sessions, goalDistance),
-                        suggestedReferenceRun = suggestion,
-                        targets = targets,
-                        periodizedPlanWeeks = matchedWeeks,
+                        // The user may have browsed to another week while this was computing.
+                        weeklySummary = if (current.currentWeekMonday == viewedMonday) derived.weeklySummary else current.weeklySummary,
+                        fourWeekTrainingLoad = if (current.currentWeekMonday == viewedMonday) derived.fourWeekLoad else current.fourWeekTrainingLoad,
+                        planNote = derived.planNote,
+                        predictionTrend = derived.predictionTrend,
+                        suggestedReferenceRun = derived.suggestion,
+                        targets = derived.targets,
+                        periodizedPlanWeeks = derived.plan,
                         isUsingDemo = sessions.any { it.isSeed }
                     )
                 }
@@ -460,6 +476,18 @@ class PaceLabViewModel(application: Application) : AndroidViewModel(application)
         _uiState.update { it.copy(showPrivacyPolicy = visible) }
     }
 }
+
+/** Everything observeData derives from the raw flows, computed off the main thread. */
+private data class DerivedData(
+    val weeklySummary: WeeklySummary,
+    val fourWeekLoad: FourWeekTrainingLoadSummary,
+    val planNote: String?,
+    val predictionTrend: List<PredictionPoint>,
+    val suggestion: RunSession?,
+    val targets: PredictedTargets,
+    val plan: List<PeriodizedPlanWeek>,
+    val duplicateCount: Int
+)
 
 private data class Tuple4<A, B, C, D>(
     val a: A,
