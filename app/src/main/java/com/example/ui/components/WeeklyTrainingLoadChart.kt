@@ -393,7 +393,7 @@ private fun TrainingLoadDetailTooltip(item: WeeklyTrainingLoadItem) {
                 fontWeight = FontWeight.SemiBold
             )
             Text(
-                text = "${item.sessionCount} sesi lari • ${PaceUtils.formatDuration(item.durationMinutes * 60L)}",
+                text = "${item.sessionCount} runs • ${PaceUtils.formatDuration(item.durationMinutes * 60L)}",
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary
             )

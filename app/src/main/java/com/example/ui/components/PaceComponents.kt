@@ -203,7 +203,7 @@ fun PaceSplitsTable(
                         if (routeConsentRequired && onRequestRoute != null) {
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
-                                text = "Rute GPS lari ini tersedia. Izinkan PaceLab membaca rute untuk membuat split per kilometer.",
+                                text = "GPS route data is available for this run. Grant PaceLab route access to compute per-kilometer splits.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = TextWhite,
                                 lineHeight = 18.sp
@@ -220,7 +220,7 @@ fun PaceSplitsTable(
                                     .fillMaxWidth()
                                     .testTag("allow_route_access_button")
                             ) {
-                                Text(text = "Izinkan akses rute", fontWeight = FontWeight.Bold)
+                                Text(text = "Allow Route Access", fontWeight = FontWeight.Bold)
                             }
                         }
 
