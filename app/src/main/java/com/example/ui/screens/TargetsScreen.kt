@@ -1,5 +1,8 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -19,23 +22,35 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DirectionsRun
 import androidx.compose.material.icons.filled.EmojiEvents
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FitnessCenter
-import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,8 +64,9 @@ import com.example.data.model.RunSession
 import com.example.data.model.UserSettings
 import com.example.ui.theme.AthleticBorder
 import com.example.ui.theme.AthleticDarkCard
+import com.example.ui.theme.AthleticDarkSurface
+import com.example.ui.theme.StatusSuccess
 import com.example.ui.theme.TextSecondary
-import com.example.ui.theme.StatusWarning
 import com.example.ui.theme.TextTertiary
 import com.example.ui.theme.TextWhite
 import com.example.ui.theme.VoltOnPrimary
@@ -63,9 +79,13 @@ import com.example.ui.theme.Zone5Red
 import com.example.util.PaceUtils
 import com.example.util.PredictedTargets
 import com.example.util.PredictionPoint
+import com.example.util.RiegelCalculator
 import com.example.util.VdotCalculator
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.util.Locale
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TargetsScreen(
     userSettings: UserSettings,
@@ -76,22 +96,166 @@ fun TargetsScreen(
     predictionTrend: List<PredictionPoint> = emptyList(),
     suggestedRun: RunSession? = null,
     goalLabel: String = "10K",
+    onUpdateHrZones: ((z1Max: Int, z2Max: Int, z3Max: Int, z4Max: Int, maxHr: Int) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    var refDistanceText by remember(userSettings.refDistanceMeters) {
-        mutableStateOf(String.format(Locale.US, "%.2f", userSettings.refDistanceMeters / 1000.0))
-    }
-    var refDurationText by remember(userSettings.refDurationSeconds) {
-        mutableStateOf(PaceUtils.formatDuration(userSettings.refDurationSeconds))
-    }
-    var refHrText by remember(userSettings.refAvgHeartRate) {
-        mutableStateOf("${userSettings.refAvgHeartRate}")
-    }
+    var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    var showGoalBottomSheet by rememberSaveable { mutableStateOf(false) }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    LazyColumn(
+    Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = 16.dp)
+    ) {
+        // Top Athletic Segmented Tab Selector
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp, bottom = 12.dp)
+                .border(1.dp, AthleticBorder, RoundedCornerShape(14.dp)),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = AthleticDarkCard)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                // Tab 0: Target & Paces
+                val isPacesSelected = selectedTab == 0
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .background(
+                            if (isPacesSelected) VoltPrimary else Color.Transparent,
+                            RoundedCornerShape(10.dp)
+                        )
+                        .clickable { selectedTab = 0 }
+                        .padding(vertical = 10.dp)
+                        .testTag("tab_target_paces"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.EmojiEvents,
+                            contentDescription = null,
+                            tint = if (isPacesSelected) VoltOnPrimary else TextSecondary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Target & Paces",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = if (isPacesSelected) VoltOnPrimary else TextWhite,
+                            fontWeight = if (isPacesSelected) FontWeight.Bold else FontWeight.Medium
+                        )
+                    }
+                }
+
+                // Tab 1: Baseline & HR
+                val isBaselineSelected = selectedTab == 1
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .background(
+                            if (isBaselineSelected) VoltPrimary else Color.Transparent,
+                            RoundedCornerShape(10.dp)
+                        )
+                        .clickable { selectedTab = 1 }
+                        .padding(vertical = 10.dp)
+                        .testTag("tab_baseline_hr"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Tune,
+                            contentDescription = null,
+                            tint = if (isBaselineSelected) VoltOnPrimary else TextSecondary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Baseline & HR",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = if (isBaselineSelected) VoltOnPrimary else TextWhite,
+                            fontWeight = if (isBaselineSelected) FontWeight.Bold else FontWeight.Medium
+                        )
+                    }
+                }
+            }
+        }
+
+        // Tab Content Switching
+        when (selectedTab) {
+            0 -> TargetPacesTabContent(
+                userSettings = userSettings,
+                targets = targets,
+                suggestedRun = suggestedRun,
+                goalLabel = goalLabel,
+                predictionTrend = predictionTrend,
+                onUseBestRun = onUseBestRun,
+                onOpenGoalSheet = { showGoalBottomSheet = true }
+            )
+            1 -> BaselineAndHrTabContent(
+                userSettings = userSettings,
+                onUpdateReferenceRace = onUpdateReferenceRace,
+                onUseBestRun = onUseBestRun,
+                onUpdateHrZones = onUpdateHrZones
+            )
+        }
+    }
+
+    // Modal Bottom Sheet: Goal Race Selection
+    if (showGoalBottomSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showGoalBottomSheet = false },
+            sheetState = sheetState,
+            containerColor = AthleticDarkSurface,
+            contentColor = TextWhite,
+            dragHandle = {
+                Box(
+                    modifier = Modifier
+                        .padding(vertical = 10.dp)
+                        .size(width = 38.dp, height = 4.dp)
+                        .background(TextTertiary.copy(alpha = 0.5f), CircleShape)
+                )
+            }
+        ) {
+            GoalRaceSelectorSheet(
+                selectedDistance = userSettings.targetRaceDistance,
+                onSelectDistance = { distance ->
+                    onUpdateTargetRace(distance)
+                    showGoalBottomSheet = false
+                },
+                onClose = { showGoalBottomSheet = false }
+            )
+        }
+    }
+}
+
+/**
+ * Tab 1: Minimalist Hero Summary, 28-day trend, and comprehensive Training Pace Zones.
+ */
+@Composable
+private fun TargetPacesTabContent(
+    userSettings: UserSettings,
+    targets: PredictedTargets?,
+    suggestedRun: RunSession?,
+    goalLabel: String,
+    predictionTrend: List<PredictionPoint>,
+    onUseBestRun: () -> Unit,
+    onOpenGoalSheet: () -> Unit
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         // Notification Banner: Faster Recent Run Detected
@@ -137,11 +301,202 @@ fun TargetsScreen(
                         Spacer(modifier = Modifier.height(10.dp))
                         Button(
                             onClick = onUseBestRun,
-                            colors = ButtonDefaults.buttonColors(containerColor = VoltPrimary, contentColor = VoltOnPrimary),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = VoltPrimary,
+                                contentColor = VoltOnPrimary
+                            ),
                             shape = RoundedCornerShape(8.dp),
                             modifier = Modifier.testTag("use_suggested_run_button")
                         ) {
                             Text("Use This Run", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Minimalist Hero Summary Card
+        item {
+            val vdotVal = VdotCalculator.vdot(
+                userSettings.refDistanceMeters,
+                userSettings.refDurationSeconds
+            )
+            val vdotText = vdotVal?.let { String.format(Locale.US, "%.0f", it) } ?: "--"
+            val fitnessCategory = when {
+                vdotVal == null -> "Calibrating"
+                vdotVal < 35.0 -> "Aerobic Base"
+                vdotVal < 45.0 -> "Intermediate"
+                vdotVal < 55.0 -> "Advanced Club"
+                vdotVal < 65.0 -> "Regional Elite"
+                else -> "National Class"
+            }
+
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.5.dp, VoltPrimary.copy(alpha = 0.8f), RoundedCornerShape(20.dp)),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = AthleticDarkCard)
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    // Header row: Target Race Badge + Configure Goal Action
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .background(VoltPrimary.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Default.EmojiEvents,
+                                        contentDescription = null,
+                                        tint = VoltPrimary,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(5.dp))
+                                    Text(
+                                        text = "${userSettings.targetRaceDistance.label} RACE GOAL",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = VoltPrimary,
+                                        fontWeight = FontWeight.Bold,
+                                        letterSpacing = 0.8.sp
+                                    )
+                                }
+                            }
+                        }
+
+                        // Configure Goal Button
+                        OutlinedButton(
+                            onClick = onOpenGoalSheet,
+                            shape = RoundedCornerShape(8.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, VoltPrimary),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = VoltPrimary),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                                horizontal = 10.dp,
+                                vertical = 4.dp
+                            ),
+                            modifier = Modifier.testTag("configure_target_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Tune,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Configure Goal",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Main Metric Row: Predicted Finish Time & Target Pace
+                    targets?.let { t ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.Bottom
+                        ) {
+                            Column {
+                                Text(
+                                    text = PaceUtils.formatDuration(t.predictedDurationSeconds),
+                                    style = MaterialTheme.typography.displayLarge,
+                                    color = TextWhite,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 40.sp
+                                )
+                                Text(
+                                    text = "Predicted Finish Time",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TextSecondary
+                                )
+                            }
+
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text(
+                                    text = PaceUtils.formatPace(t.predictedPaceSeconds),
+                                    style = MaterialTheme.typography.displayMedium,
+                                    color = VoltPrimary,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 28.sp
+                                )
+                                val speedKmh = if (t.predictedPaceSeconds > 0) 3600.0 / t.predictedPaceSeconds else 0.0
+                                Text(
+                                    text = String.format(Locale.US, "Target Pace · %.1f km/h", speedKmh),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TextSecondary
+                                )
+                            }
+                        }
+                    } ?: run {
+                        Text(
+                            text = "--:--",
+                            style = MaterialTheme.typography.displayLarge,
+                            color = TextSecondary
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Athletic Chips: VDOT score + Baseline anchor
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .background(Color(0xFF131922), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 10.dp, vertical = 7.dp)
+                        ) {
+                            Column {
+                                Text(
+                                    text = "ESTIMATED VDOT",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TextTertiary,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "$vdotText · $fitnessCategory",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = VoltPrimary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .weight(1.3f)
+                                .background(Color(0xFF131922), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 10.dp, vertical = 7.dp)
+                        ) {
+                            Column {
+                                Text(
+                                    text = "REFERENCE ANCHOR",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TextTertiary,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                val refKm = userSettings.refDistanceMeters / 1000.0
+                                val refTime = PaceUtils.formatDuration(userSettings.refDurationSeconds)
+                                Text(
+                                    text = String.format(Locale.US, "%.1f km in %s", refKm, refTime),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = TextWhite,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
                         }
                     }
                 }
@@ -178,349 +533,39 @@ fun TargetsScreen(
                         Text(
                             text = deltaText,
                             style = MaterialTheme.typography.titleMedium,
-                            color = if (delta <= 0) VoltPrimary else StatusWarning,
+                            color = if (delta <= 0) VoltPrimary else TextWhite,
                             fontWeight = FontWeight.Bold
                         )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        // The list below shows only the last 8 weeks, so name the baseline explicitly.
+                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Baseline ${PaceUtils.formatDuration(first)} (week of ${predictionTrend.first().weekMonday}), now ${PaceUtils.formatDuration(last)}",
-                            style = MaterialTheme.typography.labelSmall,
+                            text = "Calculated from ${predictionTrend.size} qualifying training runs over the last 4 weeks.",
+                            style = MaterialTheme.typography.bodySmall,
                             color = TextTertiary
                         )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "Rolling 4-week best predicted race time derived from recorded running workouts.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = TextSecondary
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
-                        predictionTrend.takeLast(8).reversed().forEach { point ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 3.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    text = "Week of ${point.weekMonday}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = TextSecondary
-                                )
-                                Text(
-                                    text = PaceUtils.formatDuration(point.predictedSeconds),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = TextWhite,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-                        }
                     }
                 }
             }
         }
 
-        // Section Title: Target Race & Paces
+        // Section Header: Derived Training Pace Zones
         item {
-            Spacer(modifier = Modifier.height(2.dp))
+            Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "Target Race & Training Paces",
-                style = MaterialTheme.typography.titleLarge,
+                text = "Individualized Training Pace Zones",
+                style = MaterialTheme.typography.titleMedium,
                 color = TextWhite,
                 fontWeight = FontWeight.Bold
             )
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(2.dp))
             Text(
-                text = "Calculated with Riegel's power formula (T2 = T1 × (D2 / D1)^1.06) to calibrate your race goals and individual training zones.",
-                style = MaterialTheme.typography.bodyMedium,
+                text = "Calibrated specifically to your target race pace with heart rate targets, volume guidance, and structured session blueprints.",
+                style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary
             )
         }
 
-        // Goal Race Distance Selector Chips
-        item {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .border(1.dp, AthleticBorder, RoundedCornerShape(16.dp)),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = AthleticDarkCard)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "GOAL RACE DISTANCE",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TextSecondary,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.sp
-                    )
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        RaceDistance.values().forEach { distance ->
-                            val isSelected = userSettings.targetRaceDistance == distance
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .border(
-                                        1.dp,
-                                        if (isSelected) VoltPrimary else AthleticBorder,
-                                        RoundedCornerShape(10.dp)
-                                    )
-                                    .background(
-                                        if (isSelected) VoltPrimary.copy(alpha = 0.15f) else Color.Transparent,
-                                        RoundedCornerShape(10.dp)
-                                    )
-                                    .clickable { onUpdateTargetRace(distance) }
-                                    .padding(vertical = 10.dp)
-                                    .testTag("target_race_${distance.name}"),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = distance.label,
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = if (isSelected) VoltPrimary else TextWhite,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Reference Race Input Card
-        item {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .border(1.dp, AthleticBorder, RoundedCornerShape(16.dp)),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = AthleticDarkCard)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "REFERENCE PERFORMANCE BASELINE",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = TextSecondary,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.sp
-                        )
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .clickable(onClick = onUseBestRun)
-                                .background(VoltPrimary.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
-                                .padding(horizontal = 8.dp, vertical = 4.dp)
-                                .testTag("use_best_run_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.AutoAwesome,
-                                contentDescription = null,
-                                tint = VoltPrimary,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "Use Best Run",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = VoltPrimary,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        OutlinedTextField(
-                            value = refDistanceText,
-                            onValueChange = {
-                                refDistanceText = it
-                                val km = it.toDoubleOrNull()
-                                val sec = PaceUtils.parseDurationToSeconds(refDurationText)
-                                val hr = refHrText.toIntOrNull() ?: 151
-                                if (km != null && sec != null && km > 0) {
-                                    onUpdateReferenceRace(km * 1000.0, sec, hr)
-                                }
-                            },
-                            label = { Text("Distance (km)") },
-                            modifier = Modifier.weight(1f).testTag("input_ref_distance"),
-                            singleLine = true,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = VoltPrimary,
-                                unfocusedBorderColor = AthleticBorder,
-                                focusedLabelColor = VoltPrimary
-                            )
-                        )
-
-                        OutlinedTextField(
-                            value = refDurationText,
-                            onValueChange = {
-                                refDurationText = it
-                                val km = refDistanceText.toDoubleOrNull() ?: 5.31
-                                val sec = PaceUtils.parseDurationToSeconds(it)
-                                val hr = refHrText.toIntOrNull() ?: 151
-                                if (sec != null && sec > 0) {
-                                    onUpdateReferenceRace(km * 1000.0, sec, hr)
-                                }
-                            },
-                            label = { Text("Time (MM:SS)") },
-                            modifier = Modifier.weight(1f).testTag("input_ref_duration"),
-                            singleLine = true,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = VoltPrimary,
-                                unfocusedBorderColor = AthleticBorder,
-                                focusedLabelColor = VoltPrimary
-                            )
-                        )
-
-                        OutlinedTextField(
-                            value = refHrText,
-                            onValueChange = {
-                                refHrText = it
-                                val km = refDistanceText.toDoubleOrNull() ?: 5.31
-                                val sec = PaceUtils.parseDurationToSeconds(refDurationText) ?: 2157L
-                                val hr = it.toIntOrNull()
-                                if (hr != null && hr > 50) {
-                                    onUpdateReferenceRace(km * 1000.0, sec, hr)
-                                }
-                            },
-                            label = { Text("Avg HR") },
-                            modifier = Modifier.weight(0.8f).testTag("input_ref_hr"),
-                            singleLine = true,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = VoltPrimary,
-                                unfocusedBorderColor = AthleticBorder,
-                                focusedLabelColor = VoltPrimary
-                            )
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    val refPace = PaceUtils.calculatePaceSeconds(
-                        userSettings.refDistanceMeters,
-                        userSettings.refDurationSeconds
-                    )
-                    // VDOT is computed from this baseline run (Daniels/Gilbert), not a stored setting.
-                    val vdotText = VdotCalculator
-                        .vdot(userSettings.refDistanceMeters, userSettings.refDurationSeconds)
-                        ?.let { String.format(Locale.US, "~%.0f", it) } ?: "--"
-                    Text(
-                        text = "Baseline Pace: ${PaceUtils.formatPace(refPace)} · Est. VDOT: $vdotText (Daniels formula)",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = TextTertiary
-                    )
-                }
-            }
-        }
-
-        // Predicted Race Target Hero Card
+        // Zone 1 & 2: Easy Run
         targets?.let { t ->
-            item {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .border(1.5.dp, VoltPrimary, RoundedCornerShape(18.dp)),
-                    shape = RoundedCornerShape(18.dp),
-                    colors = CardDefaults.cardColors(containerColor = AthleticDarkCard)
-                ) {
-                    Column(modifier = Modifier.padding(20.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.EmojiEvents,
-                                    contentDescription = null,
-                                    tint = VoltPrimary,
-                                    modifier = Modifier.size(22.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "PREDICTED ${userSettings.targetRaceDistance.label} RACE FINISH",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = VoltPrimary,
-                                    fontWeight = FontWeight.Bold,
-                                    letterSpacing = 1.sp
-                                )
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.Bottom
-                        ) {
-                            Column {
-                                Text(
-                                    text = PaceUtils.formatDuration(t.predictedDurationSeconds),
-                                    style = MaterialTheme.typography.displayLarge,
-                                    color = TextWhite,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = "Predicted Finish Time",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = TextSecondary
-                                )
-                            }
-
-                            Column(horizontalAlignment = Alignment.End) {
-                                Text(
-                                    text = PaceUtils.formatPace(t.predictedPaceSeconds),
-                                    style = MaterialTheme.typography.displayMedium,
-                                    color = VoltPrimary,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                val speedKmh = if (t.predictedPaceSeconds > 0) 3600.0 / t.predictedPaceSeconds else 0.0
-                                Text(
-                                    text = String.format(Locale.US, "Target Pace · %.1f km/h", speedKmh),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = TextSecondary
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Section Header: Derived Training Pace Zones
-            item {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Individualized Training Pace Zones",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = TextWhite,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = "Calibrated specifically to your target race pace with heart rate targets, volume guidance, and structured session blueprints.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary
-                )
-            }
-
-            // Zone 1 & 2: Easy Run
             item {
                 TrainingPaceCard(
                     zoneTag = "ZONE 1 - 2 · AEROBIC BASE",
@@ -604,6 +649,646 @@ fun TargetsScreen(
         item {
             Spacer(modifier = Modifier.height(28.dp))
         }
+    }
+}
+
+/**
+ * Tab 2: Reference Run Baseline Calibration, Live Equivalent Race Projections,
+ * Heart Rate Zone Customization, and Physiological Science.
+ */
+@Composable
+private fun BaselineAndHrTabContent(
+    userSettings: UserSettings,
+    onUpdateReferenceRace: (distanceMeters: Double, durationSeconds: Long, avgHr: Int) -> Unit,
+    onUseBestRun: () -> Unit,
+    onUpdateHrZones: ((z1Max: Int, z2Max: Int, z3Max: Int, z4Max: Int, maxHr: Int) -> Unit)?
+) {
+    val coroutineScope = rememberCoroutineScope()
+
+    // Reference Run Inputs state
+    var refDistanceText by remember(userSettings.refDistanceMeters) {
+        mutableStateOf(String.format(Locale.US, "%.2f", userSettings.refDistanceMeters / 1000.0))
+    }
+    var refDurationText by remember(userSettings.refDurationSeconds) {
+        mutableStateOf(PaceUtils.formatDuration(userSettings.refDurationSeconds))
+    }
+    var refHrText by remember(userSettings.refAvgHeartRate) {
+        mutableStateOf("${userSettings.refAvgHeartRate}")
+    }
+
+    // HR Zones Inputs state
+    var maxHrText by remember(userSettings.maxHr) {
+        mutableStateOf("${userSettings.maxHr}")
+    }
+    var z1MaxText by remember(userSettings.z1Max) {
+        mutableStateOf("${userSettings.z1Max}")
+    }
+    var z2MaxText by remember(userSettings.z2Max) {
+        mutableStateOf("${userSettings.z2Max}")
+    }
+    var z3MaxText by remember(userSettings.z3Max) {
+        mutableStateOf("${userSettings.z3Max}")
+    }
+    var z4MaxText by remember(userSettings.z4Max) {
+        mutableStateOf("${userSettings.z4Max}")
+    }
+
+    var hrSavedBannerVisible by remember { mutableStateOf(false) }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // Card 1: Reference Performance Baseline
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, AthleticBorder, RoundedCornerShape(16.dp)),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = AthleticDarkCard)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.DirectionsRun,
+                                contentDescription = null,
+                                tint = VoltPrimary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "REFERENCE BASELINE",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = VoltPrimary,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp
+                            )
+                        }
+
+                        // Use Best Run Button
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clickable(onClick = onUseBestRun)
+                                .background(VoltPrimary.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                                .testTag("use_best_run_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.AutoAwesome,
+                                contentDescription = null,
+                                tint = VoltPrimary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Use Best Run",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = VoltPrimary,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Your baseline run is used to calculate Daniels' VDOT and scale your predicted race finishes via Riegel's power curve.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // 3 Input Fields: Distance, Time, Avg HR
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = refDistanceText,
+                            onValueChange = {
+                                refDistanceText = it
+                                val km = it.toDoubleOrNull()
+                                val sec = PaceUtils.parseDurationToSeconds(refDurationText)
+                                val hr = refHrText.toIntOrNull() ?: userSettings.refAvgHeartRate
+                                if (km != null && sec != null && km > 0) {
+                                    onUpdateReferenceRace(km * 1000.0, sec, hr)
+                                }
+                            },
+                            label = { Text("Distance (km)") },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("input_ref_distance"),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = VoltPrimary,
+                                unfocusedBorderColor = AthleticBorder,
+                                focusedLabelColor = VoltPrimary
+                            )
+                        )
+
+                        OutlinedTextField(
+                            value = refDurationText,
+                            onValueChange = {
+                                refDurationText = it
+                                val km = refDistanceText.toDoubleOrNull() ?: (userSettings.refDistanceMeters / 1000.0)
+                                val sec = PaceUtils.parseDurationToSeconds(it)
+                                val hr = refHrText.toIntOrNull() ?: userSettings.refAvgHeartRate
+                                if (sec != null && sec > 0) {
+                                    onUpdateReferenceRace(km * 1000.0, sec, hr)
+                                }
+                            },
+                            label = { Text("Time (MM:SS)") },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("input_ref_duration"),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = VoltPrimary,
+                                unfocusedBorderColor = AthleticBorder,
+                                focusedLabelColor = VoltPrimary
+                            )
+                        )
+
+                        OutlinedTextField(
+                            value = refHrText,
+                            onValueChange = {
+                                refHrText = it
+                                val km = refDistanceText.toDoubleOrNull() ?: (userSettings.refDistanceMeters / 1000.0)
+                                val sec = PaceUtils.parseDurationToSeconds(refDurationText) ?: userSettings.refDurationSeconds
+                                val hr = it.toIntOrNull()
+                                if (hr != null && hr > 50) {
+                                    onUpdateReferenceRace(km * 1000.0, sec, hr)
+                                }
+                            },
+                            label = { Text("Avg HR") },
+                            modifier = Modifier
+                                .weight(0.8f)
+                                .testTag("input_ref_hr"),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = VoltPrimary,
+                                unfocusedBorderColor = AthleticBorder,
+                                focusedLabelColor = VoltPrimary
+                            )
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    val refPace = PaceUtils.calculatePaceSeconds(
+                        userSettings.refDistanceMeters,
+                        userSettings.refDurationSeconds
+                    )
+                    val vdotText = VdotCalculator
+                        .vdot(userSettings.refDistanceMeters, userSettings.refDurationSeconds)
+                        ?.let { String.format(Locale.US, "~%.0f", it) } ?: "--"
+
+                    Text(
+                        text = "Baseline Pace: ${PaceUtils.formatPace(refPace)} · Est. VDOT: $vdotText (Daniels formula)",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextTertiary
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Equivalent Performances Preview Grid
+                    Text(
+                        text = "EQUIVALENT RACE PERFORMANCES",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.8.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(
+                            Triple("5K", RaceDistance.FIVE_K.meters, "5 km"),
+                            Triple("10K", RaceDistance.TEN_K.meters, "10 km"),
+                            Triple("15K", RaceDistance.FIFTEEN_K.meters, "15 km"),
+                            Triple("21K Half", RaceDistance.HALF_MARATHON.meters, "21.1 km")
+                        ).forEach { (label, distMeters, _) ->
+                            val predictedSec = RiegelCalculator.predictRaceTimeSeconds(
+                                userSettings.refDistanceMeters,
+                                userSettings.refDurationSeconds,
+                                distMeters
+                            )
+                            val paceSec = if (distMeters > 0) (predictedSec / (distMeters / 1000.0)).toInt() else 0
+
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .background(Color(0xFF11161F), RoundedCornerShape(8.dp))
+                                    .padding(vertical = 8.dp, horizontal = 6.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(
+                                        text = label,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = VoltPrimary,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = PaceUtils.formatDuration(predictedSec),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = TextWhite,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp
+                                    )
+                                    Text(
+                                        text = PaceUtils.formatPace(paceSec),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = TextTertiary,
+                                        fontSize = 9.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Card 2: Heart Rate Zones Calibration
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, AthleticBorder, RoundedCornerShape(16.dp)),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = AthleticDarkCard)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Favorite,
+                                contentDescription = null,
+                                tint = Zone5Red,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "HEART RATE ZONES (BPM)",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = VoltPrimary,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp
+                            )
+                        }
+
+                        AnimatedVisibility(
+                            visible = hrSavedBannerVisible,
+                            enter = fadeIn(),
+                            exit = fadeOut()
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = null,
+                                    tint = StatusSuccess,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = "Saved",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = StatusSuccess,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Customize zone cutoffs to match your cardiovascular profile. Easy runs target Zone 1-2, tempo targets Zone 3, and intervals target Zone 4-5.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Zone Color Strip Visualization
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(8.dp)
+                            .background(Color(0xFF1B2433), RoundedCornerShape(4.dp)),
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Box(modifier = Modifier.weight(1f).background(Zone1Blue, RoundedCornerShape(2.dp)).fillMaxSize())
+                        Box(modifier = Modifier.weight(1.2f).background(Zone2Green, RoundedCornerShape(2.dp)).fillMaxSize())
+                        Box(modifier = Modifier.weight(1.2f).background(Zone3Amber, RoundedCornerShape(2.dp)).fillMaxSize())
+                        Box(modifier = Modifier.weight(1.2f).background(Zone4Orange, RoundedCornerShape(2.dp)).fillMaxSize())
+                        Box(modifier = Modifier.weight(1f).background(Zone5Red, RoundedCornerShape(2.dp)).fillMaxSize())
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Max HR Input
+                    OutlinedTextField(
+                        value = maxHrText,
+                        onValueChange = { maxHrText = it },
+                        label = { Text("Maximum Heart Rate (Max HR)") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("input_max_hr"),
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = VoltPrimary,
+                            unfocusedBorderColor = AthleticBorder,
+                            focusedLabelColor = VoltPrimary
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Zone Ceilings Inputs
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = z1MaxText,
+                            onValueChange = { z1MaxText = it },
+                            label = { Text("Z1 (<)") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Zone1Blue,
+                                unfocusedBorderColor = AthleticBorder
+                            )
+                        )
+                        OutlinedTextField(
+                            value = z2MaxText,
+                            onValueChange = { z2MaxText = it },
+                            label = { Text("Z2 Max") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Zone2Green,
+                                unfocusedBorderColor = AthleticBorder
+                            )
+                        )
+                        OutlinedTextField(
+                            value = z3MaxText,
+                            onValueChange = { z3MaxText = it },
+                            label = { Text("Z3 Max") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Zone3Amber,
+                                unfocusedBorderColor = AthleticBorder
+                            )
+                        )
+                        OutlinedTextField(
+                            value = z4MaxText,
+                            onValueChange = { z4MaxText = it },
+                            label = { Text("Z4 Max") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Zone4Orange,
+                                unfocusedBorderColor = AthleticBorder
+                            )
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Save / Apply HR Zones Button
+                    if (onUpdateHrZones != null) {
+                        Button(
+                            onClick = {
+                                val max = maxHrText.toIntOrNull() ?: userSettings.maxHr
+                                val z1 = z1MaxText.toIntOrNull() ?: userSettings.z1Max
+                                val z2 = z2MaxText.toIntOrNull() ?: userSettings.z2Max
+                                val z3 = z3MaxText.toIntOrNull() ?: userSettings.z3Max
+                                val z4 = z4MaxText.toIntOrNull() ?: userSettings.z4Max
+                                onUpdateHrZones(z1, z2, z3, z4, max)
+
+                                coroutineScope.launch {
+                                    hrSavedBannerVisible = true
+                                    delay(2000)
+                                    hrSavedBannerVisible = false
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = VoltPrimary,
+                                contentColor = VoltOnPrimary
+                            ),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("save_hr_zones_button")
+                        ) {
+                            Text("Save Heart Rate Calibration", fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = "Standard thresholds: Z1 (< 118 bpm), Z2 (118-140 bpm), Z3 (141-160 bpm), Z4 (161-179 bpm), Z5 (180+ bpm)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextTertiary,
+                        fontSize = 11.sp
+                    )
+                }
+            }
+        }
+
+        // Card 3: Science & Methodology
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, AthleticBorder, RoundedCornerShape(16.dp)),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = AthleticDarkCard)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Info,
+                            contentDescription = null,
+                            tint = VoltPrimary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "SCIENCE & METHODOLOGY",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = VoltPrimary,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.sp
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = "• Riegel's Power Law: Predicts race finish duration using T2 = T1 × (D2 / D1)^1.06, factoring natural fatigue decay across longer distances.\n\n" +
+                                "• Jack Daniels' VDOT: Expresses aerobic capacity as a pseudo-VO2max score derived from one recent race effort, independent of race distance.\n\n" +
+                                "• Polarized 80/20 Distribution: Keeps 80% of weekly volume in Zone 1-2 to stimulate mitochondrial density and capillary beds while leaving energy for hard threshold and interval sessions.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                        lineHeight = 18.sp
+                    )
+                }
+            }
+        }
+
+        item {
+            Spacer(modifier = Modifier.height(28.dp))
+        }
+    }
+}
+
+/**
+ * Modal Bottom Sheet for selecting Goal Race Distance.
+ */
+@Composable
+private fun GoalRaceSelectorSheet(
+    selectedDistance: RaceDistance,
+    onSelectDistance: (RaceDistance) -> Unit,
+    onClose: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text(
+                    text = "Configure Goal Race",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = TextWhite,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Select your target event to calibrate training paces",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary
+                )
+            }
+
+            IconButton(onClick = onClose) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Close",
+                    tint = TextSecondary
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        RaceDistance.values().forEach { distance ->
+            val isSelected = selectedDistance == distance
+            val (desc, kmLabel) = when (distance) {
+                RaceDistance.FIVE_K -> Pair("VO2 max & high-aerobic speed benchmark", "5.0 km")
+                RaceDistance.TEN_K -> Pair("Standard endurance threshold & aerobic power", "10.0 km")
+                RaceDistance.FIFTEEN_K -> Pair("Intermediate long-distance threshold benchmark", "15.0 km")
+                RaceDistance.HALF_MARATHON -> Pair("Half marathon stamina & glycogen efficiency", "21.1 km")
+            }
+
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 5.dp)
+                    .border(
+                        1.dp,
+                        if (isSelected) VoltPrimary else AthleticBorder,
+                        RoundedCornerShape(12.dp)
+                    )
+                    .clickable { onSelectDistance(distance) }
+                    .testTag("target_race_${distance.name}"),
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isSelected) VoltPrimary.copy(alpha = 0.12f) else AthleticDarkCard
+                )
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = distance.label,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = if (isSelected) VoltPrimary else TextWhite,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Box(
+                                modifier = Modifier
+                                    .background(Color(0xFF1B2330), RoundedCornerShape(4.dp))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = kmLabel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TextSecondary,
+                                    fontSize = 10.sp
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Text(
+                            text = desc,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                            fontSize = 11.sp
+                        )
+                    }
+
+                    if (isSelected) {
+                        Box(
+                            modifier = Modifier
+                                .size(24.dp)
+                                .background(VoltPrimary, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = "Selected",
+                                tint = VoltOnPrimary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
     }
 }
 

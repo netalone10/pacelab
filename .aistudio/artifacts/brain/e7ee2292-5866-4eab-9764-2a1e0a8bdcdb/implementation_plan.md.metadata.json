@@ -1,6 +1,6 @@
 {
-  "summary": "Implementation plan to resolve KM splits in activity details by providing a Samsung Health & Health Connect sync troubleshooting guide, improving SplitCalculator tolerance, redesigning the Targets screen with clear visual training pace zones (Easy, Long Run, Tempo, Interval) and concrete workout suggestions, and unifying international athletic English copy.",
-  "updatedAt": "2026-10-20T03:59:49.130318815Z",
-  "requestFeedback": true,
-  "userFacing": true
+  "summary":  "Implementation plan to restructure the Targets screen into a clean, two-tab layout with a minimalist hero summary, modal configuration sheet for goal race selection, and a dedicated Baseline and HR Settings tab.",
+  "updatedAt":  "2026-10-21T03:40:49.868636573Z",
+  "requestFeedback":  true,
+  "userFacing":  true
 }

@@ -324,7 +324,8 @@ fun PaceLabApp(
                     onUseBestRun = onUseBestRun,
                     predictionTrend = uiState.predictionTrend,
                     suggestedRun = uiState.suggestedReferenceRun,
-                    goalLabel = (uiState.targetRace?.distance ?: uiState.userSettings.targetRaceDistance).label
+                    goalLabel = (uiState.targetRace?.distance ?: uiState.userSettings.targetRaceDistance).label,
+                    onUpdateHrZones = onUpdateHrZones
                 )
                 3 -> PlanScreen(
                     userSettings = uiState.userSettings,
