@@ -1,6 +1,7 @@
 package com.example.data.model
 
 import com.example.util.HrZoneDistribution
+import com.example.util.HrZones
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
@@ -79,12 +80,14 @@ data class UserSettings(
     val vo2Max: Double = 48.0,              // ~48 default
     val targetRaceDistance: RaceDistance = RaceDistance.TEN_K,
     val trainingDaysPerWeek: Int = 3,       // 3 days/week default
-    val z1Max: Int = 117,                  // < 118
-    val z2Min: Int = 118,
-    val z2Max: Int = 140,                  // 118 - 140
-    val z3Min: Int = 141,
-    val z3Max: Int = 160,                  // 141 - 160
-    val z4Min: Int = 161,
-    val z4Max: Int = 179,                  // 161 - 179
-    val maxHr: Int = 190
+    val z1Max: Int = HrZones().z1Max,
+    val z2Min: Int = HrZones().z2Min,
+    val z2Max: Int = HrZones().z2Max,
+    val z3Min: Int = HrZones().z3Min,
+    val z3Max: Int = HrZones().z3Max,
+    val z4Min: Int = HrZones().z4Min,
+    val z4Max: Int = HrZones().z4Max,
+    val maxHr: Int = HrZones().maxHr,
+    /** Transient UI state: false only until the first settings row has been stored. */
+    val isMaxHrConfigured: Boolean = false
 )

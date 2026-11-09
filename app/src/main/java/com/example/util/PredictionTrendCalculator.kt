@@ -6,7 +6,6 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.temporal.TemporalAdjusters
-import kotlin.math.pow
 
 /** Best predicted 10K time seen in the 28 days ending at the end of [weekMonday]'s week. */
 data class PredictionPoint(
@@ -24,11 +23,14 @@ data class PredictionPoint(
 object PredictionTrendCalculator {
 
     const val MIN_DISTANCE_METERS = 4800.0
-    private const val RIEGEL_EXPONENT = 1.06
     private const val WINDOW_DAYS = 28L
 
     fun predictSeconds(session: RunSession, targetMeters: Double): Long =
-        (session.durationSeconds * (targetMeters / session.distanceMeters).pow(RIEGEL_EXPONENT)).toLong()
+        RiegelCalculator.predictRaceTimeSeconds(
+            refDistanceMeters = session.distanceMeters,
+            refDurationSeconds = session.durationSeconds,
+            targetDistanceMeters = targetMeters
+        )
 
     private fun eligible(sessions: List<RunSession>): List<RunSession> =
         sessions.filter {

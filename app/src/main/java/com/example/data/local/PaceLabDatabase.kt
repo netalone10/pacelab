@@ -42,7 +42,7 @@ data class IgnoredSessionEntity(
 
 @Entity(tableName = "plan_states")
 data class PlanStateEntity(
-    @PrimaryKey val planKey: String, // e.g. "w1_TUESDAY"
+    @PrimaryKey val planKey: String, // e.g. "2026-11-09_TUESDAY"
     val isDone: Boolean,
     val matchedDistanceMeters: Double?,
     val matchedPaceSec: Int?,
@@ -140,6 +140,9 @@ interface PaceLabDao {
     @Query("SELECT * FROM target_race_events WHERE id = 1")
     fun getTargetRaceFlow(): Flow<RaceEventEntity?>
 
+    @Query("SELECT * FROM target_race_events WHERE id = 1")
+    suspend fun getTargetRace(): RaceEventEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun saveTargetRace(event: RaceEventEntity)
 
@@ -156,7 +159,7 @@ interface PaceLabDao {
         RaceEventEntity::class
     ],
     version = 3,
-    exportSchema = false
+    exportSchema = true
 )
 abstract class PaceLabDatabase : RoomDatabase() {
     abstract fun dao(): PaceLabDao
@@ -166,7 +169,7 @@ abstract class PaceLabDatabase : RoomDatabase() {
         private var INSTANCE: PaceLabDatabase? = null
 
         /** Keeps settings, plan progress and the target race when the schema grows. */
-        private val MIGRATION_2_3 = object : Migration(2, 3) {
+        val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE cached_sessions ADD COLUMN hrHistogram TEXT")
                 db.execSQL("CREATE TABLE IF NOT EXISTS ignored_sessions (id TEXT NOT NULL, PRIMARY KEY(id))")
@@ -181,8 +184,7 @@ abstract class PaceLabDatabase : RoomDatabase() {
                     "pacelab_local.db"
                 )
                     .addMigrations(MIGRATION_2_3)
-                    // Only used when no migration path exists (for example an unknown old version).
-                    .fallbackToDestructiveMigration(dropAllTables = true)
+                    .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
                     .build()
                     .also { INSTANCE = it }
             }

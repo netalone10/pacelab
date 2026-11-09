@@ -31,12 +31,14 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -52,6 +54,7 @@ import com.example.ui.theme.VoltOnPrimary
 import com.example.ui.theme.VoltPrimary
 import com.example.BuildConfig
 import com.example.util.HrZoneCalculator
+import kotlinx.coroutines.delay
 
 @Composable
 fun SettingsAndPrivacyScreen(
@@ -67,6 +70,8 @@ fun SettingsAndPrivacyScreen(
     onOpenPlayStore: () -> Unit,
     onLoadDemoData: () -> Unit,
     onUpdateHrZones: (z1Max: Int, z2Max: Int, z3Max: Int, z4Max: Int, maxHr: Int) -> Unit,
+    isExportingSnapshot: Boolean,
+    onExportSnapshot: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var maxHrText by remember(userSettings.maxHr) { mutableStateOf("${userSettings.maxHr}") }
@@ -74,6 +79,23 @@ fun SettingsAndPrivacyScreen(
     var z2MaxText by remember(userSettings.z2Max) { mutableStateOf("${userSettings.z2Max}") }
     var z3MaxText by remember(userSettings.z3Max) { mutableStateOf("${userSettings.z3Max}") }
     var z4MaxText by remember(userSettings.z4Max) { mutableStateOf("${userSettings.z4Max}") }
+    var maxHrDirty by remember { mutableStateOf(false) }
+
+    fun persistMaxHr(): Boolean {
+        val max = maxHrText.toIntOrNull() ?: return false
+        val z1 = z1MaxText.toIntOrNull() ?: userSettings.z1Max
+        val z2 = z2MaxText.toIntOrNull() ?: userSettings.z2Max
+        val z3 = z3MaxText.toIntOrNull() ?: userSettings.z3Max
+        val z4 = z4MaxText.toIntOrNull() ?: userSettings.z4Max
+        onUpdateHrZones(z1, z2, z3, z4, max)
+        return true
+    }
+
+    LaunchedEffect(maxHrText) {
+        if (!maxHrDirty) return@LaunchedEffect
+        delay(600)
+        if (maxHrDirty && persistMaxHr()) maxHrDirty = false
+    }
 
     LazyColumn(
         modifier = modifier
@@ -119,7 +141,8 @@ fun SettingsAndPrivacyScreen(
 
                         Button(
                             onClick = {
-                                val max = maxHrText.toIntOrNull() ?: 190
+                                maxHrDirty = false
+                                val max = maxHrText.toIntOrNull() ?: HrZoneCalculator.DEFAULT_MAX_HR
                                 val calculated = HrZoneCalculator.fromMaxHr(max)
                                 z1MaxText = "${calculated.z1Max}"
                                 z2MaxText = "${calculated.z2Max}"
@@ -136,19 +159,35 @@ fun SettingsAndPrivacyScreen(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
+                    if (!userSettings.isMaxHrConfigured) {
+                        Text(
+                            text = "Max HR is not set. Zones currently use the 190 bpm default.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                            modifier = Modifier.padding(bottom = 8.dp).testTag("max_hr_not_set")
+                        )
+                    }
+
                     OutlinedTextField(
                         value = maxHrText,
                         onValueChange = {
                             maxHrText = it
-                            val max = it.toIntOrNull() ?: userSettings.maxHr
-                            val z1 = z1MaxText.toIntOrNull() ?: userSettings.z1Max
-                            val z2 = z2MaxText.toIntOrNull() ?: userSettings.z2Max
-                            val z3 = z3MaxText.toIntOrNull() ?: userSettings.z3Max
-                            val z4 = z4MaxText.toIntOrNull() ?: userSettings.z4Max
-                            onUpdateHrZones(z1, z2, z3, z4, max)
+                            maxHrDirty = true
                         },
-                        label = { Text("Maximum Heart Rate (Max HR)") },
-                        modifier = Modifier.fillMaxWidth().testTag("input_max_hr"),
+                        label = {
+                            Text(
+                                if (userSettings.isMaxHrConfigured) "Maximum Heart Rate (Max HR)"
+                                else "Maximum Heart Rate (not set)"
+                            )
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("input_max_hr")
+                            .onFocusChanged { focus ->
+                                if (!focus.isFocused && maxHrDirty && persistMaxHr()) {
+                                    maxHrDirty = false
+                                }
+                            },
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = VoltPrimary,
@@ -314,6 +353,17 @@ fun SettingsAndPrivacyScreen(
                         }
                     }
                 }
+            }
+        }
+
+        // Portable backup because Android backup is disabled for health data.
+        item {
+            OutlinedButton(
+                onClick = onExportSnapshot,
+                enabled = !isExportingSnapshot,
+                modifier = Modifier.fillMaxWidth().testTag("export_snapshot_button")
+            ) {
+                Text(if (isExportingSnapshot) "Preparing snapshot..." else "Export 12-week JSON snapshot")
             }
         }
 

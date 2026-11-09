@@ -54,6 +54,14 @@ object WeeklyTrainingLoadCalculator {
 
     private val shortDateFormatter = DateTimeFormatter.ofPattern("d MMM", Locale.US)
 
+    internal fun statusForDeltaPercent(deltaPercent: Double?): TrainingLoadStatus = when {
+        deltaPercent == null -> TrainingLoadStatus.OPTIMAL
+        deltaPercent > 18.0 -> TrainingLoadStatus.OVERREACHING
+        deltaPercent < -20.0 -> TrainingLoadStatus.RECOVERY
+        deltaPercent >= 0.0 -> TrainingLoadStatus.OPTIMAL
+        else -> TrainingLoadStatus.MAINTAINING
+    }
+
     /**
      * Compute training load points for a single session.
      */
@@ -121,6 +129,8 @@ object WeeklyTrainingLoadCalculator {
         )
 
         val items = ArrayList<WeeklyTrainingLoadItem>(4)
+        val actualCurrentMonday = LocalDate.now(zone)
+            .with(java.time.temporal.TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
         var previousWeekLoad: Int? = null
 
         for ((index, mon) in mondayList.withIndex()) {
@@ -148,22 +158,20 @@ object WeeklyTrainingLoadCalculator {
                 ((totalLoad - previousWeekLoad.toDouble()) / previousWeekLoad.toDouble()) * 100.0
             } else null
 
-            val isCurrent = (index == 3)
-            val weekLabel = when (index) {
-                0 -> "W-3"
-                1 -> "W-2"
-                2 -> "W-1"
-                else -> "This Week"
+            val isCurrent = mon == actualCurrentMonday
+            val weekLabel = when {
+                isCurrent -> "in progress"
+                index == 0 -> "W-3"
+                index == 1 -> "W-2"
+                index == 2 -> "W-1"
+                else -> "W0"
             }
             val dateRangeStr = "${mon.format(shortDateFormatter)} - ${sun.format(shortDateFormatter)}"
 
-            val weekStatus = when {
-                totalLoad == 0 -> TrainingLoadStatus.INSUFFICIENT
-                deltaPercent == null -> TrainingLoadStatus.OPTIMAL
-                deltaPercent > 25.0 -> TrainingLoadStatus.OVERREACHING
-                deltaPercent < -20.0 -> TrainingLoadStatus.RECOVERY
-                deltaPercent in 0.0..18.0 -> TrainingLoadStatus.OPTIMAL
-                else -> TrainingLoadStatus.MAINTAINING
+            val weekStatus = if (totalLoad == 0) {
+                TrainingLoadStatus.INSUFFICIENT
+            } else {
+                statusForDeltaPercent(deltaPercent)
             }
 
             items.add(
@@ -207,9 +215,9 @@ object WeeklyTrainingLoadCalculator {
             currentLoad == 0 -> TrainingLoadStatus.INSUFFICIENT
             acwr != null && acwr > 1.45 -> TrainingLoadStatus.OVERREACHING
             acwr != null && acwr < 0.75 -> TrainingLoadStatus.RECOVERY
-            progPercent != null && progPercent > 25.0 -> TrainingLoadStatus.OVERREACHING
+            progPercent != null && progPercent > 18.0 -> TrainingLoadStatus.OVERREACHING
             progPercent != null && progPercent < -20.0 -> TrainingLoadStatus.RECOVERY
-            progPercent != null && progPercent in -5.0..20.0 -> TrainingLoadStatus.OPTIMAL
+            progPercent != null && progPercent in -5.0..18.0 -> TrainingLoadStatus.OPTIMAL
             else -> TrainingLoadStatus.MAINTAINING
         }
 

@@ -73,7 +73,9 @@ class PaceLabCalculationsTest {
     }
 
     @Test
-    fun testHeartRateZoneBucketing() {
+    fun testHeartRateZones_followFromMaxHrDefaults() {
+        assertEquals(HrZoneCalculator.fromMaxHr(190), HrZones())
+        assertEquals(1, HrZoneCalculator.determineZone(110))
         val zones = HrZones(
             z1Max = 117,
             z2Min = 118,
@@ -94,23 +96,6 @@ class PaceLabCalculationsTest {
         assertEquals(4, HrZoneCalculator.determineZone(161, zones))
         assertEquals(4, HrZoneCalculator.determineZone(175, zones))
         assertEquals(5, HrZoneCalculator.determineZone(185, zones))
-
-        // Test sample distribution bucketing
-        val samples = listOf(
-            Pair(0L, 115),   // Z1 for 10s
-            Pair(10L, 130),  // Z2 for 10s
-            Pair(20L, 150),  // Z3 for 10s
-            Pair(30L, 170),  // Z4 for 10s
-            Pair(40L, 185)   // Z5 for 5s (default tail)
-        )
-
-        val dist = HrZoneCalculator.bucketHrSamples(samples, zones, defaultIntervalSeconds = 5L)
-        assertEquals(10L, dist.z1Seconds)
-        assertEquals(10L, dist.z2Seconds)
-        assertEquals(10L, dist.z3Seconds)
-        assertEquals(10L, dist.z4Seconds)
-        assertEquals(5L, dist.z5Seconds)
-        assertEquals(45L, dist.totalSeconds)
     }
 
     @Test

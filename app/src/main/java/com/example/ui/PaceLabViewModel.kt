@@ -63,6 +63,8 @@ data class PaceLabUiState(
     val hasHealthPermissions: Boolean = false,
     val hasAllHealthPermissions: Boolean = false,
     val syncError: String? = null,
+    val calculationError: String? = null,
+    val isExportingSnapshot: Boolean = false,
     val autoSyncEnabled: Boolean = true,
     val hasBackgroundPermission: Boolean = false,
     val lastSyncEpochMs: Long = 0L,
@@ -106,6 +108,8 @@ class PaceLabViewModel(application: Application) : AndroidViewModel(application)
             ) { sessions, settings, planStates, targetRace ->
                 Tuple4(sessions, settings, planStates, targetRace)
             }.collect { (sessions, settings, planStates, targetRace) ->
+                try {
+                    withContext(Dispatchers.Default) {
                 // The summary follows the week the user is browsing, but the plan is always
                 // anchored to the real current week so browsing never shifts the schedule.
                 val viewedMonday = _uiState.value.currentWeekMonday
@@ -200,16 +204,25 @@ class PaceLabViewModel(application: Application) : AndroidViewModel(application)
                         duplicateSessionCount = derived.duplicateCount,
                         userSettings = settings,
                         targetRace = targetRace,
-                        // The user may have browsed to another week while this was computing.
-                        weeklySummary = if (current.currentWeekMonday == viewedMonday) derived.weeklySummary else current.weeklySummary,
-                        fourWeekTrainingLoad = if (current.currentWeekMonday == viewedMonday) derived.fourWeekLoad else current.fourWeekTrainingLoad,
-                        planNote = derived.planNote,
-                        predictionTrend = derived.predictionTrend,
-                        suggestedReferenceRun = derived.suggestion,
-                        targets = derived.targets,
-                        periodizedPlanWeeks = derived.plan,
-                        isUsingDemo = sessions.any { it.isSeed }
+                        weeklySummary = if (current.currentWeekMonday == viewedMonday) weeklySummary else current.weeklySummary,
+                        fourWeekTrainingLoad = if (current.currentWeekMonday == viewedMonday) fourWeekLoad else current.fourWeekTrainingLoad,
+                        planNote = volumeAdvice.note,
+                        predictionTrend = PredictionTrendCalculator.trend(sessions, goalDistance),
+                        suggestedReferenceRun = suggestion,
+                        targets = targets,
+                        periodizedPlanWeeks = matchedWeeks,
+                        isUsingDemo = sessions.any { it.isSeed },
+                        calculationError = null
                     )
+                }
+                    }
+                } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    android.util.Log.e("PaceLabViewModel", "Failed calculating dashboard data", e)
+                    _uiState.update {
+                        it.copy(calculationError = e.message ?: "Gagal menghitung ringkasan latihan")
+                    }
                 }
             }
         }
@@ -244,18 +257,27 @@ class PaceLabViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private suspend fun runSync() {
+        if (_uiState.value.isSyncing) return
         _uiState.update { it.copy(isSyncing = true, syncError = null) }
-        val result = repository.syncData()
-        val error = result.exceptionOrNull()
-        if (error == null) SyncPrefs.markSynced(getApplication())
-        _uiState.update {
-            it.copy(
-                isSyncing = false,
-                lastSyncEpochMs = SyncPrefs.lastSyncEpochMs(getApplication()),
-                // A missing permission is shown by the status text, not as an error.
-                syncError = if (error == null || error is HealthPermissionMissingException) null
-                else (error.message ?: "Sync failed")
-            )
+        try {
+            val result = repository.syncData()
+            val error = result.exceptionOrNull()
+            if (error == null) SyncPrefs.markSynced(getApplication())
+            _uiState.update {
+                it.copy(
+                    lastSyncEpochMs = SyncPrefs.lastSyncEpochMs(getApplication()),
+                    // A missing permission is shown by the status text, not as an error.
+                    syncError = if (error == null || error is HealthPermissionMissingException) null
+                    else (error.message ?: "Sync gagal")
+                )
+            }
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            android.util.Log.e("PaceLabViewModel", "Sync failed", e)
+            _uiState.update { it.copy(syncError = e.message ?: "Sync gagal") }
+        } finally {
+            _uiState.update { it.copy(isSyncing = false) }
         }
     }
 
@@ -263,6 +285,31 @@ class PaceLabViewModel(application: Application) : AndroidViewModel(application)
         SyncPrefs.setAutoSyncEnabled(getApplication(), enabled)
         SyncScheduler.apply(getApplication(), enabled)
         _uiState.update { it.copy(autoSyncEnabled = enabled) }
+    }
+
+    fun shareSnapshot() {
+        if (_uiState.value.isExportingSnapshot) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isExportingSnapshot = true, syncError = null) }
+            try {
+                val json = repository.createSnapshotJson()
+                val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                    type = "application/json"
+                    putExtra(android.content.Intent.EXTRA_SUBJECT, "pacelab-snapshot.json")
+                    putExtra(android.content.Intent.EXTRA_TEXT, json)
+                }
+                val chooser = android.content.Intent.createChooser(sendIntent, "Export PaceLab snapshot")
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                getApplication<Application>().startActivity(chooser)
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.e("PaceLabViewModel", "Snapshot export failed", e)
+                _uiState.update { it.copy(syncError = e.message ?: "Export snapshot gagal") }
+            } finally {
+                _uiState.update { it.copy(isExportingSnapshot = false) }
+            }
+        }
     }
 
     fun loadDemoData() {
@@ -278,23 +325,37 @@ class PaceLabViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun selectWeekOffset(offsetWeeks: Long) {
-        _uiState.update { current ->
-            val newMonday = current.currentWeekMonday.plusWeeks(offsetWeeks)
-            val newSummary = repository.computeWeeklySummary(
-                allSessions = current.allSessions,
-                weekStartMonday = newMonday,
-                userSettings = current.userSettings
-            )
-            val newLoad = repository.compute4WeekTrainingLoad(
-                allSessions = current.allSessions,
-                anchorMonday = newMonday,
-                userSettings = current.userSettings
-            )
-            current.copy(
-                currentWeekMonday = newMonday,
-                weeklySummary = newSummary,
-                fourWeekTrainingLoad = newLoad
-            )
+        val snapshot = _uiState.value
+        val newMonday = snapshot.currentWeekMonday.plusWeeks(offsetWeeks)
+        viewModelScope.launch {
+            try {
+                val (newSummary, newLoad) = withContext(Dispatchers.Default) {
+                    repository.computeWeeklySummary(
+                        allSessions = snapshot.allSessions,
+                        weekStartMonday = newMonday,
+                        userSettings = snapshot.userSettings
+                    ) to repository.compute4WeekTrainingLoad(
+                        allSessions = snapshot.allSessions,
+                        anchorMonday = newMonday,
+                        userSettings = snapshot.userSettings
+                    )
+                }
+                _uiState.update { current ->
+                    current.copy(
+                        currentWeekMonday = newMonday,
+                        weeklySummary = newSummary,
+                        fourWeekTrainingLoad = newLoad,
+                        calculationError = null
+                    )
+                }
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.e("PaceLabViewModel", "Failed calculating selected week", e)
+                _uiState.update {
+                    it.copy(calculationError = e.message ?: "Gagal menghitung minggu yang dipilih")
+                }
+            }
         }
     }
 

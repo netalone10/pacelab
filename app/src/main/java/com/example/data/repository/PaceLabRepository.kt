@@ -20,7 +20,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.time.Instant
 import java.time.LocalDate
 
@@ -29,6 +33,11 @@ class PaceLabRepository(
     private val healthConnectRepository: HealthConnectRepository = HealthConnectRepositoryImpl(context),
     private val dao: PaceLabDao = PaceLabDatabase.getDatabase(context).dao()
 ) {
+
+    companion object {
+        /** ViewModel and WorkManager use separate repository instances but must share one sync. */
+        private val syncMutex = Mutex()
+    }
 
     val healthRepo: HealthConnectRepository
         get() = healthConnectRepository
@@ -59,8 +68,64 @@ class PaceLabRepository(
         return healthConnectRepository.getGrantedPermissions()
     }
 
-    suspend fun syncData(): Result<SyncSummary> {
-        return healthConnectRepository.syncAllRunningData()
+    suspend fun syncData(): Result<SyncSummary> = syncMutex.withLock {
+        healthConnectRepository.syncAllRunningData()
+    }
+
+    suspend fun createSnapshotJson(now: Instant = Instant.now()): String = withContext(Dispatchers.IO) {
+        val cutoff = now.minusSeconds(84L * 24L * 60L * 60L)
+        val runs = dao.getAllSessionsList()
+            .filter { Instant.ofEpochMilli(it.startTimeEpochMs) >= cutoff }
+            .sortedBy { it.startTimeEpochMs }
+        val settings = dao.getUserSettings()?.toDomainModel() ?: UserSettings()
+        val race = dao.getTargetRace()?.toDomainModel()
+
+        val runsJson = JSONArray()
+        runs.forEach { run ->
+            runsJson.put(JSONObject().apply {
+                put("id", run.id)
+                put("startTimeEpochMs", run.startTimeEpochMs)
+                put("endTimeEpochMs", run.endTimeEpochMs)
+                put("distanceMeters", run.distanceMeters)
+                put("durationSeconds", run.durationSeconds)
+                put("avgPaceSeconds", run.avgPaceSeconds)
+                put("avgHeartRate", run.avgHeartRate ?: JSONObject.NULL)
+                put("maxHeartRate", run.maxHeartRate ?: JSONObject.NULL)
+                put("totalCalories", run.totalCalories ?: JSONObject.NULL)
+                put("elevationGainedMeters", run.elevationGainedMeters ?: JSONObject.NULL)
+                put("hrHistogram", run.hrHistogram ?: JSONObject.NULL)
+            })
+        }
+        val raceJson = race?.let {
+            JSONObject().apply {
+                put("raceName", it.raceName)
+                put("raceDateEpochDay", it.raceDate.toEpochDay())
+                put("distanceMeters", it.distance.meters)
+                put("targetDurationSeconds", it.targetDurationSeconds ?: JSONObject.NULL)
+                put("targetPaceSeconds", it.targetPaceSeconds ?: JSONObject.NULL)
+                put("location", it.location ?: JSONObject.NULL)
+            }
+        } ?: JSONObject.NULL
+
+        JSONObject().apply {
+            put("format", "pacelab-snapshot")
+            put("version", 1)
+            put("generatedAtEpochMs", now.toEpochMilli())
+            put("windowWeeks", 12)
+            put("runs", runsJson)
+            put("targetRace", raceJson)
+            put("trainingDaysPerWeek", settings.trainingDaysPerWeek)
+            put("hrZones", JSONObject().apply {
+                put("z1Max", settings.z1Max)
+                put("z2Min", settings.z2Min)
+                put("z2Max", settings.z2Max)
+                put("z3Min", settings.z3Min)
+                put("z3Max", settings.z3Max)
+                put("z4Min", settings.z4Min)
+                put("z4Max", settings.z4Max)
+                put("maxHr", settings.maxHr)
+            })
+        }.toString(2)
     }
 
     /** Demo data is only inserted while no real run is cached, so it never mixes with real data. */
@@ -200,7 +265,8 @@ class PaceLabRepository(
         z3Max = z3Max,
         z4Min = z4Min,
         z4Max = z4Max,
-        maxHr = maxHr
+        maxHr = maxHr,
+        isMaxHrConfigured = true
     )
 
     private fun UserSettings.toEntity() = UserSettingsEntity(

@@ -41,6 +41,15 @@ import kotlin.math.roundToInt
 /** Thrown when the minimum read permissions (exercise + distance) are not granted. */
 class HealthPermissionMissingException : Exception("Permission to read running data has not been granted")
 
+internal fun encodeHeartRateHistogramForSync(
+    hasPermission: Boolean,
+    samples: List<Pair<Long, Int>>
+): String? = when {
+    !hasPermission -> null
+    samples.isEmpty() -> ""
+    else -> HrHistogram.encode(HrHistogram.build(samples))
+}
+
 data class SyncSummary(val fetched: Int, val added: Int)
 
 /** Where the per-km splits came from, shown in the UI so a missing split is easy to debug. */
@@ -235,7 +244,10 @@ class HealthConnectRepositoryImpl(
         val durationSec = Duration.between(record.startTime, record.endTime).seconds.coerceAtLeast(1L)
         val range = TimeRangeFilter.between(record.startTime, record.endTime)
 
-        val metrics = mutableSetOf<AggregateMetric<Any>>(DistanceRecord.DISTANCE_TOTAL)
+        val metrics = mutableSetOf<AggregateMetric<Any>>(
+            DistanceRecord.DISTANCE_TOTAL,
+            ExerciseSessionRecord.EXERCISE_DURATION_TOTAL
+        )
         if (HealthPermissions.calories in granted) metrics.add(TotalCaloriesBurnedRecord.ENERGY_TOTAL)
         if (HealthPermissions.elevation in granted) metrics.add(ElevationGainedRecord.ELEVATION_GAINED_TOTAL)
         val hasHr = HealthPermissions.heartRate in granted
@@ -245,6 +257,7 @@ class HealthConnectRepositoryImpl(
         }
 
         var distanceMeters = 0.0
+        var movingDurationSec = durationSec
         var calories: Double? = null
         var elevation: Double? = null
         var avgBpm: Int? = null
@@ -253,6 +266,10 @@ class HealthConnectRepositoryImpl(
         try {
             val agg = client.aggregate(AggregateRequest(metrics = metrics, timeRangeFilter = range))
             distanceMeters = agg[DistanceRecord.DISTANCE_TOTAL]?.inMeters ?: 0.0
+            movingDurationSec = agg[ExerciseSessionRecord.EXERCISE_DURATION_TOTAL]
+                ?.seconds
+                ?.coerceIn(1L, durationSec)
+                ?: durationSec
             calories = agg[TotalCaloriesBurnedRecord.ENERGY_TOTAL]?.inKilocalories
             elevation = agg[ElevationGainedRecord.ELEVATION_GAINED_TOTAL]?.inMeters
             avgBpm = agg[HeartRateRecord.BPM_AVG]?.toInt()
@@ -274,14 +291,13 @@ class HealthConnectRepositoryImpl(
         // A run without distance is useless for pace and plan matching.
         if (distanceMeters <= 0.0) return null
 
-        var histogramText = ""
+        var hrSamples = emptyList<Pair<Long, Int>>()
         if (hasHr) {
             try {
-                val samples = readHrSamples(client, record.startTime, record.endTime)
-                if (samples.isNotEmpty()) {
-                    histogramText = HrHistogram.encode(HrHistogram.build(samples))
-                    if (avgBpm == null) avgBpm = samples.map { it.second }.average().roundToInt()
-                    if (maxBpm == null) maxBpm = samples.maxOf { it.second }
+                hrSamples = readHrSamples(client, record.startTime, record.endTime)
+                if (hrSamples.isNotEmpty()) {
+                    if (avgBpm == null) avgBpm = hrSamples.map { it.second }.average().roundToInt()
+                    if (maxBpm == null) maxBpm = hrSamples.maxOf { it.second }
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -289,6 +305,7 @@ class HealthConnectRepositoryImpl(
                 Log.w(tag, "Could not read HR samples for ${record.metadata.id}", e)
             }
         }
+        val histogramText = encodeHeartRateHistogramForSync(hasHr, hrSamples)
 
         return RunSession(
             id = record.metadata.id,
@@ -296,7 +313,7 @@ class HealthConnectRepositoryImpl(
             endTime = record.endTime,
             distanceMeters = distanceMeters,
             durationSeconds = durationSec,
-            avgPaceSeconds = PaceUtils.calculatePaceSeconds(distanceMeters, durationSec),
+            avgPaceSeconds = PaceUtils.calculatePaceSeconds(distanceMeters, movingDurationSec),
             avgHeartRate = avgBpm,
             maxHeartRate = maxBpm,
             totalCalories = calories,

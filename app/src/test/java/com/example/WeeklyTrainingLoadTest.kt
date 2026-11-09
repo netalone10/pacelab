@@ -74,7 +74,7 @@ class WeeklyTrainingLoadTest {
         assertEquals("W-3", summary.weeks[0].weekLabel)
         assertEquals("W-2", summary.weeks[1].weekLabel)
         assertEquals("W-1", summary.weeks[2].weekLabel)
-        assertEquals("This Week", summary.weeks[3].weekLabel)
+        assertEquals("in progress", summary.weeks[3].weekLabel)
         assertTrue(summary.weeks[3].isCurrentWeek)
 
         // Demo sessions have runs in all 4 weeks
@@ -116,6 +116,21 @@ class WeeklyTrainingLoadTest {
 
         assertEquals(TrainingLoadStatus.OVERREACHING, summary.status)
         assertTrue(summary.acuteChronicRatio != null && summary.acuteChronicRatio!! > 1.4)
+    }
+
+    @Test
+    fun progressionStatus_doesNotCallEighteenToTwentyFivePercentMaintaining() {
+        assertEquals(
+            TrainingLoadStatus.OPTIMAL,
+            WeeklyTrainingLoadCalculator.statusForDeltaPercent(18.0)
+        )
+        listOf(18.01, 20.0, 25.0, 25.01).forEach { delta ->
+            assertEquals(
+                "Delta $delta must be flagged",
+                TrainingLoadStatus.OVERREACHING,
+                WeeklyTrainingLoadCalculator.statusForDeltaPercent(delta)
+            )
+        }
     }
 
     private fun createTestSession(date: LocalDate, distMeters: Double, durSec: Long, avgHr: Int): RunSession {

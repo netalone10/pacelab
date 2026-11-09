@@ -4,7 +4,7 @@ import android.content.Context
 import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
-import com.example.data.repository.HealthConnectRepositoryImpl
+import com.example.data.repository.PaceLabRepository
 import com.example.data.repository.HealthPermissionMissingException
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -20,7 +20,7 @@ class SyncWorker(
     override suspend fun doWork(): Result {
         if (!SyncPrefs.isAutoSyncEnabled(applicationContext)) return Result.success()
         return try {
-            val outcome = HealthConnectRepositoryImpl(applicationContext).syncAllRunningData()
+            val outcome = PaceLabRepository(applicationContext).syncData()
             val error = outcome.exceptionOrNull()
             when {
                 error == null -> {

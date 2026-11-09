@@ -93,6 +93,22 @@ fun WeeklyScreen(
             )
         }
 
+        state.calculationError?.let { message ->
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth().testTag("calculation_error"),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                ) {
+                    Text(
+                        text = message,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(16.dp)
+                    )
+                }
+            }
+        }
+
         // Week Selector Card
         item {
             Card(
@@ -150,6 +166,7 @@ fun WeeklyScreen(
 
                         IconButton(
                             onClick = onSync,
+                            enabled = !state.isSyncing,
                             modifier = Modifier.testTag("sync_button")
                         ) {
                             if (state.isSyncing) {

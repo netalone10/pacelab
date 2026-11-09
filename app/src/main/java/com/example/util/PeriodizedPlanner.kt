@@ -1,5 +1,6 @@
 package com.example.util
 
+import com.example.data.model.RaceDistance
 import com.example.data.model.RaceEvent
 import com.example.data.model.RunSession
 import java.time.DayOfWeek
@@ -195,8 +196,19 @@ object PeriodizedPlanner {
             currentMonday
         }
 
-        // Highest volume the build is allowed to reach: +10% per loading week, at most 4 steps.
-        val peakVolumeKm = baseWeeklyVolumeKm * Math.pow(1.10, (totalWeeks - 2).coerceIn(0, 4).toDouble())
+        val isHalfMarathon = raceEvent.distance == RaceDistance.HALF_MARATHON
+        // HM needs a longer build than the generic four-step cap. Progression itself remains 10%.
+        val peakVolumeKm = if (isHalfMarathon) {
+            baseWeeklyVolumeKm * 2.0
+        } else {
+            baseWeeklyVolumeKm * Math.pow(1.10, (totalWeeks - 2).coerceIn(0, 4).toDouble())
+        }
+        val longRunGoalMeters = if (isHalfMarathon) {
+            (raceEvent.distance.meters * 0.90).coerceAtLeast(14_000.0)
+        } else null
+        var longRunMeters = longRunGoalMeters?.let { goal ->
+            minOf(goal, baseWeeklyVolumeKm * 1000.0 * longRunShare(validDays))
+        } ?: 0.0
 
         val weeks = ArrayList<PeriodizedPlanWeek>(totalWeeks)
         var lastLoadKm = baseWeeklyVolumeKm
@@ -229,15 +241,34 @@ object PeriodizedPlanner {
             previousWasDeload = isDeloadWeek
 
             val weeklyMeters = volumeKm * 1000.0
+            if (longRunGoalMeters != null && !isRaceWeek) {
+                longRunMeters = when {
+                    weekIndex == 1 -> longRunMeters
+                    isDeloadWeek -> longRunMeters * PlanGenerator.DELOAD_FACTOR
+                    else -> minOf(longRunGoalMeters, longRunMeters + 1_500.0)
+                }.coerceAtMost(weeklyMeters * 0.65)
+            }
             val days = if (isRaceWeek) {
                 raceWeekDays(weeklyMeters, targets, zones, raceEvent)
             } else {
-                val qualityType = if (phase == TrainingPhase.PEAK && !isDeloadWeek) {
+                val isHmPeak = isHalfMarathon && phase == TrainingPhase.PEAK && !isDeloadWeek
+                val qualityType = if (phase == TrainingPhase.PEAK && !isDeloadWeek && !isHalfMarathon) {
                     WorkoutType.INTERVALS
                 } else {
                     WorkoutType.TEMPO
                 }
-                standardDays(validDays, weeklyMeters, targets, zones, qualityType)
+                standardDays(
+                    daysPerWeek = validDays,
+                    weeklyMeters = weeklyMeters,
+                    targets = targets,
+                    zones = zones,
+                    qualityType = qualityType,
+                    qualityPacesOverride = if (isHmPeak) {
+                        Pair(targets.predictedPaceSeconds, targets.predictedPaceSeconds)
+                    } else null,
+                    qualityLabelOverride = if (isHmPeak) "Half marathon race pace" else null,
+                    longRunTargetMeters = if (isHalfMarathon) longRunMeters else null
+                )
             }
 
             weeks.add(
@@ -319,11 +350,11 @@ object PeriodizedPlanner {
             items.add(
                 PlanDayItem(
                     dayOfWeek = DayOfWeek.of(openersIndex),
-                    type = WorkoutType.TEMPO,
-                    targetDistanceMeters = roundTo500m(weeklyMeters * 0.40).coerceAtLeast(2500.0),
-                    minPaceSec = targets.tempoPaceRange.first,
-                    maxPaceSec = targets.tempoPaceRange.second,
-                    targetHrZone = "Short strides, neuromuscular tune-up"
+                    type = WorkoutType.EASY,
+                    targetDistanceMeters = (weeklyMeters * 0.20).coerceIn(2_000.0, 4_000.0),
+                    minPaceSec = targets.easyPaceRange.first,
+                    maxPaceSec = targets.easyPaceRange.second,
+                    targetHrZone = "Short easy + 4 x 20 s strides"
                 )
             )
         }
@@ -350,11 +381,16 @@ object PeriodizedPlanner {
         weeklyMeters: Double,
         targets: PredictedTargets,
         zones: HrZones,
-        qualityType: WorkoutType
+        qualityType: WorkoutType,
+        qualityPacesOverride: Pair<Int, Int>? = null,
+        qualityLabelOverride: String? = null,
+        longRunTargetMeters: Double? = null
     ): List<PlanDayItem> {
         val qualityIsIntervals = qualityType == WorkoutType.INTERVALS
-        val qualityPaces = if (qualityIsIntervals) targets.intervalPaceRange else targets.tempoPaceRange
-        val qualityHr = HrZoneCalculator.label(if (qualityIsIntervals) 4 else 3, zones)
+        val qualityPaces = qualityPacesOverride
+            ?: if (qualityIsIntervals) targets.intervalPaceRange else targets.tempoPaceRange
+        val qualityHr = qualityLabelOverride
+            ?: HrZoneCalculator.label(if (qualityIsIntervals) 4 else 3, zones)
         val aerobicHr = HrZoneCalculator.label(2, zones)
         val recoveryHr = HrZoneCalculator.easyLabel(zones)
 
@@ -377,9 +413,7 @@ object PeriodizedPlanner {
             )
         }
 
-        // The long run stays at about a third of the week (half with only two running days), so
-        // one session never carries most of the weekly load.
-        return when (daysPerWeek) {
+        val days = when (daysPerWeek) {
             2 -> listOf(
                 item(DayOfWeek.TUESDAY, qualityType, 0.50, qualityPaces, qualityHr),
                 item(DayOfWeek.SATURDAY, WorkoutType.LONG_RUN, 0.50, targets.longRunPaceRange, aerobicHr)
@@ -396,6 +430,26 @@ object PeriodizedPlanner {
                 item(DayOfWeek.SATURDAY, WorkoutType.LONG_RUN, 0.35, targets.longRunPaceRange, aerobicHr)
             )
         }
+
+        if (longRunTargetMeters == null) return days
+        val otherDistance = days.filter { it.type != WorkoutType.LONG_RUN }
+            .sumOf { it.targetDistanceMeters }
+        val remainingDistance = (weeklyMeters - longRunTargetMeters).coerceAtLeast(0.0)
+        return days.map { day ->
+            when {
+                day.type == WorkoutType.LONG_RUN -> day.copy(targetDistanceMeters = longRunTargetMeters)
+                otherDistance > 0.0 -> day.copy(
+                    targetDistanceMeters = roundTo500m(day.targetDistanceMeters / otherDistance * remainingDistance)
+                )
+                else -> day
+            }
+        }
+    }
+
+    private fun longRunShare(daysPerWeek: Int): Double = when (daysPerWeek) {
+        2 -> 0.60
+        4 -> 0.35
+        else -> 0.45
     }
 
     private const val INTERVAL_REP_METERS = 800.0

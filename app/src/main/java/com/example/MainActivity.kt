@@ -128,7 +128,8 @@ class MainActivity : ComponentActivity() {
                     onOpenRaceSetup = { viewModel.setRaceSetupDialogVisible(true) },
                     onDeleteRace = { viewModel.deleteTargetRace() },
                     onUpdateHrZones = { z1, z2, z3, z4, max -> viewModel.updateHrZones(z1, z2, z3, z4, max) },
-                    onToggleAutoSync = { viewModel.setAutoSync(it) }
+                    onToggleAutoSync = { viewModel.setAutoSync(it) },
+                    onExportSnapshot = { viewModel.shareSnapshot() }
                 )
 
                 // Race Setup & Customization Dialog
@@ -170,7 +171,8 @@ fun PaceLabApp(
     onOpenRaceSetup: () -> Unit,
     onDeleteRace: () -> Unit,
     onUpdateHrZones: (Int, Int, Int, Int, Int) -> Unit,
-    onToggleAutoSync: (Boolean) -> Unit
+    onToggleAutoSync: (Boolean) -> Unit,
+    onExportSnapshot: () -> Unit
 ) {
     Scaffold(
         containerColor = AthleticDarkBg,
@@ -351,7 +353,9 @@ fun PaceLabApp(
                     onRequestPermissions = onRequestPermissions,
                     onOpenPlayStore = onOpenPlayStore,
                     onLoadDemoData = onLoadDemoData,
-                    onUpdateHrZones = onUpdateHrZones
+                    onUpdateHrZones = onUpdateHrZones,
+                    isExportingSnapshot = uiState.isExportingSnapshot,
+                    onExportSnapshot = onExportSnapshot
                 )
             }
         }

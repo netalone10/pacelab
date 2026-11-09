@@ -1,14 +1,14 @@
 package com.example.util
 
 data class HrZones(
-    val z1Max: Int = 117, // Z1 < 118
-    val z2Min: Int = 118,
-    val z2Max: Int = 140, // Z2 118-140
-    val z3Min: Int = 141,
-    val z3Max: Int = 160, // Z3 141-160
-    val z4Min: Int = 161,
-    val z4Max: Int = 179, // Z4 161-179
-    val maxHr: Int = 190
+    val z1Max: Int = HrZoneCalculator.fromMaxHr(HrZoneCalculator.DEFAULT_MAX_HR).z1Max,
+    val z2Min: Int = HrZoneCalculator.fromMaxHr(HrZoneCalculator.DEFAULT_MAX_HR).z2Min,
+    val z2Max: Int = HrZoneCalculator.fromMaxHr(HrZoneCalculator.DEFAULT_MAX_HR).z2Max,
+    val z3Min: Int = HrZoneCalculator.fromMaxHr(HrZoneCalculator.DEFAULT_MAX_HR).z3Min,
+    val z3Max: Int = HrZoneCalculator.fromMaxHr(HrZoneCalculator.DEFAULT_MAX_HR).z3Max,
+    val z4Min: Int = HrZoneCalculator.fromMaxHr(HrZoneCalculator.DEFAULT_MAX_HR).z4Min,
+    val z4Max: Int = HrZoneCalculator.fromMaxHr(HrZoneCalculator.DEFAULT_MAX_HR).z4Max,
+    val maxHr: Int = HrZoneCalculator.DEFAULT_MAX_HR
 )
 
 data class HrZoneDistribution(
@@ -38,6 +38,8 @@ data class HrZoneDistribution(
 
 object HrZoneCalculator {
 
+    const val DEFAULT_MAX_HR = 190
+
     /**
      * Determines which zone (1 to 5) an HR value belongs to.
      */
@@ -65,44 +67,6 @@ object HrZoneCalculator {
 
     /** Label for easy / recovery effort that spans Z1 and Z2. */
     fun easyLabel(zones: HrZones): String = "Z1-Z2 (up to ${zones.z2Max} bpm)"
-
-    /**
-     * Given a list of (timestampSeconds, bpm) samples, buckets time spent in each zone.
-     * Assuming samples are sequential with intervals.
-     */
-    fun bucketHrSamples(
-        samples: List<Pair<Long, Int>>, // (timeOffsetSeconds, bpm)
-        zones: HrZones = HrZones(),
-        defaultIntervalSeconds: Long = 5L
-    ): HrZoneDistribution {
-        if (samples.isEmpty()) return HrZoneDistribution()
-
-        var z1 = 0L
-        var z2 = 0L
-        var z3 = 0L
-        var z4 = 0L
-        var z5 = 0L
-
-        for (i in samples.indices) {
-            val (time, bpm) = samples[i]
-            val duration = if (i < samples.size - 1) {
-                val diff = samples[i + 1].first - time
-                if (diff in 1..30) diff else defaultIntervalSeconds
-            } else {
-                defaultIntervalSeconds
-            }
-
-            when (determineZone(bpm, zones)) {
-                1 -> z1 += duration
-                2 -> z2 += duration
-                3 -> z3 += duration
-                4 -> z4 += duration
-                5 -> z5 += duration
-            }
-        }
-
-        return HrZoneDistribution(z1, z2, z3, z4, z5)
-    }
 
     /**
      * Recalculates zone ranges based on Max HR (using standard Karvonen / percentage method if user updates Max HR).

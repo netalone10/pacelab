@@ -1,5 +1,6 @@
 package com.example.util
 
+import com.example.data.model.RaceDistance
 import kotlin.math.pow
 import kotlin.math.roundToInt
 
@@ -19,7 +20,16 @@ data class PredictedTargets(
 
 object RiegelCalculator {
 
-    private const val RIEGEL_EXPONENT = 1.06
+    private const val DEFAULT_EXPONENT = 1.06
+    // A less aggressive fatigue factor avoids overestimating HM time from a short reference race.
+    private const val HALF_MARATHON_EXPONENT = 1.10
+
+    fun exponentFor(targetDistanceMeters: Double): Double =
+        if (targetDistanceMeters == RaceDistance.HALF_MARATHON.meters) {
+            HALF_MARATHON_EXPONENT
+        } else {
+            DEFAULT_EXPONENT
+        }
 
     /**
      * Training paces are anchored to the predicted 10K race pace, whatever the goal distance is.
@@ -30,7 +40,7 @@ object RiegelCalculator {
 
     /**
      * Calculates predicted race time using Riegel's formula:
-     * T2 = T1 * (D2 / D1) ^ 1.06
+     * T2 = T1 * (D2 / D1) ^ exponentFor(D2). HM uses 1.10; other goals use 1.06.
      */
     fun predictRaceTimeSeconds(
         refDistanceMeters: Double,
@@ -41,8 +51,9 @@ object RiegelCalculator {
             return 0L
         }
         val distanceRatio = targetDistanceMeters / refDistanceMeters
-        val predictedSeconds = refDurationSeconds.toDouble() * distanceRatio.pow(RIEGEL_EXPONENT)
-        return predictedSeconds.roundToInt().toLong()
+        val predictedSeconds = refDurationSeconds.toDouble() *
+            distanceRatio.pow(exponentFor(targetDistanceMeters))
+        return predictedSeconds.toLong()
     }
 
     /** Predicted pace in seconds per kilometre for [distanceMeters], rounded to whole seconds. */

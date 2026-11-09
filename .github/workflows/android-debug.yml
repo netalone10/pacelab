@@ -18,13 +18,13 @@ jobs:
           java-version: "21"
 
       # The runner image already ships the Android SDK; setup-android's sdkmanager call failed.
-      # Only accept licenses so AGP can auto-download the platform it needs (compileSdk 36.1).
+      # Only accept licenses so AGP can auto-download the platform it needs (compileSdk 37.2).
       - name: Accept Android SDK licenses
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
 
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "9.3.1"
+          gradle-version: "9.8.0"
 
       # debug.keystore is gitignored but referenced by app/build.gradle.kts, so generate one.
       - name: Generate debug keystore
